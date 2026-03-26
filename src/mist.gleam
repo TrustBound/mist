@@ -16,6 +16,7 @@ import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
 import gleam/string_tree.{type StringTree}
+import gleam/yielder.{type Yielder}
 import glisten
 import glisten/transport
 import gramps/websocket.{BinaryFrame, Data, TextFrame} as gramps_websocket
@@ -28,7 +29,8 @@ import mist/internal/http.{
   type Connection as InternalConnection,
   type ResponseData as InternalResponseData, Bytes as InternalBytes,
   Chunked as InternalChunked, File as InternalFile,
-  ServerSentEvents as InternalServerSentEvents, Websocket as InternalWebsocket,
+  ServerSentEvents as InternalServerSentEvents,
+  Streaming as InternalStreaming, Websocket as InternalWebsocket,
 }
 import mist/internal/next
 import mist/internal/websocket.{
@@ -158,6 +160,10 @@ pub type ResponseData {
   Websocket
   Bytes(BytesTree)
   Chunked
+  /// Stream response body from a yielder. Over HTTP/1.1, this uses chunked
+  /// transfer encoding to send each element incrementally. Over HTTP/2, the
+  /// yielder is buffered into a single response body.
+  Streaming(Yielder(BytesTree))
   /// See `mist.send_file` to use this response type.
   File(descriptor: file.FileDescriptor, offset: Int, length: Int)
   ServerSentEvents
@@ -518,6 +524,7 @@ fn convert_body_types(
     Bytes(data) -> InternalBytes(data)
     File(descriptor, offset, length) -> InternalFile(descriptor, offset, length)
     Chunked -> InternalChunked
+    Streaming(stream) -> InternalStreaming(stream)
     ServerSentEvents -> InternalServerSentEvents
   }
   response.set_body(resp, new_body)
