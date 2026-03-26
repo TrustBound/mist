@@ -6,13 +6,14 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/yielder.{type Yielder}
 import glisten/socket.{type Socket, type SocketReason}
 import glisten/transport.{type Transport}
 import logging
 import mist/internal/http.{type Connection}
 import mist/internal/http2/frame.{
   type Frame, type PushState, type Setting, type StreamIdentifier, Complete,
-  Data, Header,
+  Continued, Data, Header,
 }
 
 pub type Http2Settings {
@@ -64,29 +65,98 @@ fn send_headers(
   headers: List(Header),
   end_stream: Bool,
   stream_identifier: StreamIdentifier(Frame),
+  max_frame_size: Int,
 ) -> Result(HpackContext, String) {
-  hpack_encode(context, headers)
-  |> result.try(fn(pair) {
-    let #(headers, new_context) = pair
-    let header_frame =
-      Header(
-        data: Complete(headers),
-        end_stream: end_stream,
-        identifier: stream_identifier,
-        priority: None,
-      )
-    let encoded = frame.encode(header_frame)
-    case
+  use pair <- result.try(hpack_encode(context, headers))
+  let #(encoded_headers, new_context) = pair
+  let header_size = bit_array.byte_size(encoded_headers)
+  case header_size <= max_frame_size {
+    True -> {
+      let header_frame =
+        Header(
+          data: Complete(encoded_headers),
+          end_stream: end_stream,
+          identifier: stream_identifier,
+          priority: None,
+        )
       transport.send(
         conn.transport,
         conn.socket,
-        bytes_tree.from_bit_array(encoded),
+        bytes_tree.from_bit_array(frame.encode(header_frame)),
       )
-    {
-      Ok(_nil) -> Ok(new_context)
-      Error(_reason) -> Error("Failed to send HTTP/2 headers")
+      |> result.replace(new_context)
+      |> result.map_error(fn(_) { "Failed to send HTTP/2 headers" })
     }
-  })
+    False -> {
+      let assert Ok(first_chunk) =
+        bit_array.slice(encoded_headers, 0, max_frame_size)
+      let assert Ok(remaining) =
+        bit_array.slice(
+          encoded_headers,
+          max_frame_size,
+          header_size - max_frame_size,
+        )
+      let header_frame =
+        Header(
+          data: Continued(first_chunk),
+          end_stream: end_stream,
+          identifier: stream_identifier,
+          priority: None,
+        )
+      use _nil <- result.try(
+        transport.send(
+          conn.transport,
+          conn.socket,
+          bytes_tree.from_bit_array(frame.encode(header_frame)),
+        )
+        |> result.map_error(fn(_) { "Failed to send HTTP/2 headers" }),
+      )
+      use _nil <- result.try(send_continuations(
+        conn,
+        remaining,
+        stream_identifier,
+        max_frame_size,
+      ))
+      Ok(new_context)
+    }
+  }
+}
+
+fn send_continuations(
+  conn: Connection,
+  data: BitArray,
+  identifier: StreamIdentifier(Frame),
+  max_frame_size: Int,
+) -> Result(Nil, String) {
+  let size = bit_array.byte_size(data)
+  case size <= max_frame_size {
+    True -> {
+      let cont =
+        frame.Continuation(data: Complete(data), identifier: identifier)
+      transport.send(
+        conn.transport,
+        conn.socket,
+        bytes_tree.from_bit_array(frame.encode(cont)),
+      )
+      |> result.map_error(fn(_) { "Failed to send CONTINUATION frame" })
+    }
+    False -> {
+      let assert Ok(chunk) = bit_array.slice(data, 0, max_frame_size)
+      let assert Ok(rest) =
+        bit_array.slice(data, max_frame_size, size - max_frame_size)
+      let cont =
+        frame.Continuation(data: Continued(chunk), identifier: identifier)
+      use _nil <- result.try(
+        transport.send(
+          conn.transport,
+          conn.socket,
+          bytes_tree.from_bit_array(frame.encode(cont)),
+        )
+        |> result.map_error(fn(_) { "Failed to send CONTINUATION frame" }),
+      )
+      send_continuations(conn, rest, identifier, max_frame_size)
+    }
+  }
 }
 
 fn send_data(
@@ -100,11 +170,7 @@ fn send_data(
   case size <= max_frame_size {
     True -> {
       let data_frame =
-        Data(
-          data: data,
-          end_stream: end_stream,
-          identifier: stream_identifier,
-        )
+        Data(data: data, end_stream: end_stream, identifier: stream_identifier)
       transport.send(
         conn.transport,
         conn.socket,
@@ -113,16 +179,14 @@ fn send_data(
       |> result.map_error(fn(err) {
         logging.log(
           logging.Debug,
-          "Failed to send HTTP/2 data: "
-            <> socket.reason_to_string(err),
+          "Failed to send HTTP/2 data: " <> socket.reason_to_string(err),
         )
         "Failed to send HTTP/2 data"
       })
     }
     False -> {
       let chunk = bit_array.slice(data, 0, max_frame_size)
-      let rest =
-        bit_array.slice(data, max_frame_size, size - max_frame_size)
+      let rest = bit_array.slice(data, max_frame_size, size - max_frame_size)
       case chunk, rest {
         Ok(chunk_data), Ok(rest_data) -> {
           let chunk_frame =
@@ -140,8 +204,7 @@ fn send_data(
             |> result.map_error(fn(err) {
               logging.log(
                 logging.Debug,
-                "Failed to send HTTP/2 data: "
-                  <> socket.reason_to_string(err),
+                "Failed to send HTTP/2 data: " <> socket.reason_to_string(err),
               )
               "Failed to send HTTP/2 data"
             }),
@@ -184,9 +247,9 @@ pub fn send_bytes_tree(
   let headers = [#(":status", int.to_string(resp.status)), ..resp.headers]
 
   case bytes_tree.byte_size(resp.body) {
-    0 -> send_headers(context, conn, headers, True, id)
+    0 -> send_headers(context, conn, headers, True, id, settings.max_frame_size)
     _ -> {
-      send_headers(context, conn, headers, False, id)
+      send_headers(context, conn, headers, False, id, settings.max_frame_size)
       |> result.try(fn(context) {
         send_data(
           conn,
@@ -198,6 +261,47 @@ pub fn send_bytes_tree(
         |> result.replace(context)
       })
     }
+  }
+}
+
+pub fn send_streaming(
+  resp: Response(Yielder(BytesTree)),
+  conn: Connection,
+  context: HpackContext,
+  id: StreamIdentifier(Frame),
+  settings: Http2Settings,
+) -> Result(HpackContext, String) {
+  let headers = [#(":status", int.to_string(resp.status)), ..resp.headers]
+  use context <- result.try(send_headers(
+    context,
+    conn,
+    headers,
+    False,
+    id,
+    settings.max_frame_size,
+  ))
+  use _nil <- result.try(send_yielder(
+    conn,
+    resp.body,
+    id,
+    settings.max_frame_size,
+  ))
+  Ok(context)
+}
+
+fn send_yielder(
+  conn: Connection,
+  stream: Yielder(BytesTree),
+  id: StreamIdentifier(Frame),
+  max_frame_size: Int,
+) -> Result(Nil, String) {
+  case yielder.step(stream) {
+    yielder.Next(chunk, rest) -> {
+      let data = bytes_tree.to_bit_array(chunk)
+      use _nil <- result.try(send_data(conn, data, id, False, max_frame_size))
+      send_yielder(conn, rest, id, max_frame_size)
+    }
+    yielder.Done -> send_data(conn, <<>>, id, True, max_frame_size)
   }
 }
 

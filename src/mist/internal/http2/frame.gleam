@@ -82,6 +82,8 @@ pub type Frame {
   WindowUpdate(amount: Int, identifier: StreamIdentifier(Frame))
 
   Continuation(data: Data, identifier: StreamIdentifier(Frame))
+
+  Unknown(frame_type: Int)
 }
 
 pub type ConnectionError {
@@ -124,7 +126,7 @@ pub fn decode(frame: BitArray) -> Result(#(Frame, BitArray), ConnectionError) {
         7 -> parse_go_away(identifier, flags, length, payload)
         8 -> parse_window_update(identifier, flags, length, payload)
         9 -> parse_continuation(identifier, flags, length, payload)
-        _ -> Error(ProtocolError)
+        _ -> Ok(Unknown(frame_type))
       }
       |> result.map(fn(frame) { #(frame, rest) })
     }
@@ -588,6 +590,7 @@ pub fn encode(frame: Frame) -> BitArray {
         data:bits,
       >>
     }
+    Unknown(_frame_type) -> panic as "Cannot encode unknown frame"
   }
 }
 

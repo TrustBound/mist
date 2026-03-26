@@ -1,11 +1,9 @@
-import gleam/bytes_tree
 import gleam/erlang/process.{type Selector, type Subject}
 import gleam/http/response
 import gleam/option.{type Option, Some}
 import gleam/otp/actor
 import gleam/otp/factory_supervisor as factory
 import gleam/result
-import gleam/yielder
 import glisten.{type Loop, Packet, User}
 import logging
 import mist/internal/http.{
@@ -76,13 +74,9 @@ pub fn with_func(
             )
           }
           Streaming(stream) -> {
-            let combined =
-              yielder.fold(stream, bytes_tree.new(), fn(acc, chunk) {
-                bytes_tree.append_tree(acc, chunk)
-              })
             resp
-            |> response.set_body(combined)
-            |> http2.send_bytes_tree(
+            |> response.set_body(stream)
+            |> http2.send_streaming(
               conn,
               state.send_hpack_context,
               id,
@@ -95,7 +89,11 @@ pub fn with_func(
           ServerSentEvents -> Error("Server-Sent Events unsupported for HTTP/2")
         }
         |> result.map(fn(context) {
-          Http2(http2_handler.send_hpack_context(state, context))
+          Http2(
+            state
+            |> http2_handler.send_hpack_context(context)
+            |> http2_handler.remove_stream(id),
+          )
         })
         |> result.map_error(fn(err) {
           logging.log(logging.Debug, "Error sending HTTP/2 data: " <> err)

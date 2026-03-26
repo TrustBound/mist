@@ -1,5 +1,14 @@
 # Changelog
 
+# Unreleased
+
+- Fix HTTP/2 connection closure after first request by handling stream errors
+  gracefully instead of closing the connection
+- Ignore unknown HTTP/2 frame types per RFC 9113 Section 4.1
+- Add CONTINUATION frame support for large HPACK-encoded header blocks
+- Send streaming response bodies incrementally over HTTP/2 instead of buffering
+- Clean up completed streams from connection state after response is sent
+
 # v6.0.2
 
 - Properly send close frame when user handler stops its loop
