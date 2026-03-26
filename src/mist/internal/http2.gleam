@@ -59,7 +59,7 @@ pub fn update_settings(
   })
 }
 
-fn send_headers(
+pub fn send_headers(
   context: HpackContext,
   conn: Connection,
   headers: List(Header),
@@ -111,12 +111,9 @@ fn send_headers(
         )
         |> result.map_error(fn(_) { "Failed to send HTTP/2 headers" }),
       )
-      use _nil <- result.try(send_continuations(
-        conn,
-        remaining,
-        stream_identifier,
-        max_frame_size,
-      ))
+      use _nil <- result.try(
+        send_continuations(conn, remaining, stream_identifier, max_frame_size),
+      )
       Ok(new_context)
     }
   }
@@ -159,7 +156,7 @@ fn send_continuations(
   }
 }
 
-fn send_data(
+pub fn send_data(
   conn: Connection,
   data: BitArray,
   stream_identifier: StreamIdentifier(Frame),
@@ -170,7 +167,11 @@ fn send_data(
   case size <= max_frame_size {
     True -> {
       let data_frame =
-        Data(data: data, end_stream: end_stream, identifier: stream_identifier)
+        Data(
+          data: data,
+          end_stream: end_stream,
+          identifier: stream_identifier,
+        )
       transport.send(
         conn.transport,
         conn.socket,
@@ -179,14 +180,16 @@ fn send_data(
       |> result.map_error(fn(err) {
         logging.log(
           logging.Debug,
-          "Failed to send HTTP/2 data: " <> socket.reason_to_string(err),
+          "Failed to send HTTP/2 data: "
+            <> socket.reason_to_string(err),
         )
         "Failed to send HTTP/2 data"
       })
     }
     False -> {
       let chunk = bit_array.slice(data, 0, max_frame_size)
-      let rest = bit_array.slice(data, max_frame_size, size - max_frame_size)
+      let rest =
+        bit_array.slice(data, max_frame_size, size - max_frame_size)
       case chunk, rest {
         Ok(chunk_data), Ok(rest_data) -> {
           let chunk_frame =
@@ -204,7 +207,8 @@ fn send_data(
             |> result.map_error(fn(err) {
               logging.log(
                 logging.Debug,
-                "Failed to send HTTP/2 data: " <> socket.reason_to_string(err),
+                "Failed to send HTTP/2 data: "
+                  <> socket.reason_to_string(err),
               )
               "Failed to send HTTP/2 data"
             }),
@@ -272,20 +276,12 @@ pub fn send_streaming(
   settings: Http2Settings,
 ) -> Result(HpackContext, String) {
   let headers = [#(":status", int.to_string(resp.status)), ..resp.headers]
-  use context <- result.try(send_headers(
-    context,
-    conn,
-    headers,
-    False,
-    id,
-    settings.max_frame_size,
-  ))
-  use _nil <- result.try(send_yielder(
-    conn,
-    resp.body,
-    id,
-    settings.max_frame_size,
-  ))
+  use context <- result.try(
+    send_headers(context, conn, headers, False, id, settings.max_frame_size),
+  )
+  use _nil <- result.try(
+    send_yielder(conn, resp.body, id, settings.max_frame_size),
+  )
   Ok(context)
 }
 

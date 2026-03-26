@@ -1,9 +1,12 @@
 import gleam/bit_array
 import gleam/bytes_tree
+import gleam/erlang/process
 import gleam/http/request.{type Request}
 import gleam/http/response
 import gleam/int
 import gleam/list
+import gleam/otp/actor
+import gleam/string_tree
 import gleam/yielder
 import mist
 import mist/internal/http.{type Connection}
@@ -51,7 +54,8 @@ pub fn it_responds_to_ping_with_ack_test() {
   let ping_data = <<1, 2, 3, 4, 5, 6, 7, 8>>
   h2c_send_ping(socket, ping_data)
 
-  let #(frame_type, flags, stream_id, payload) = h2c_recv_frame(socket, 5000)
+  let #(frame_type, flags, stream_id, payload) =
+    h2c_recv_frame(socket, 5000)
   assert frame_type == 6
   assert flags == 1
   assert stream_id == 0
@@ -142,7 +146,8 @@ pub fn it_handles_rst_stream_test() {
 }
 
 fn drain_until_ping_ack(socket: H2cSocket, expected_data: BitArray) -> Nil {
-  let #(frame_type, flags, _stream_id, payload) = h2c_recv_frame(socket, 5000)
+  let #(frame_type, flags, _stream_id, payload) =
+    h2c_recv_frame(socket, 5000)
   case frame_type, flags {
     6, 1 -> {
       assert payload == expected_data
@@ -159,16 +164,13 @@ pub fn it_sends_goaway_on_protocol_error_test() {
 
   h2c_send_frame(socket, <<0, 0, 5, 4, 0, 0, 0, 0, 0, 1, 2, 3, 4, 5>>)
 
-  let #(frame_type, _flags, stream_id, payload) = h2c_recv_frame(socket, 5000)
+  let #(frame_type, _flags, stream_id, payload) =
+    h2c_recv_frame(socket, 5000)
   assert frame_type == 7
   assert stream_id == 0
 
-  let assert <<
-    _reserved:size(1),
-    _last_stream_id:size(31),
-    error_code:size(32),
-    _rest:bits,
-  >> = payload
+  let assert <<_reserved:size(1), _last_stream_id:size(31),
+    error_code:size(32), _rest:bits>> = payload
   assert error_code == 6
 
   h2c_close(socket)
@@ -216,7 +218,8 @@ pub fn it_handles_multiple_requests_same_connection_test() {
     True,
   )
 
-  let #(headers_type_1, _, headers_stream_1, _) = h2c_recv_frame(socket, 5000)
+  let #(headers_type_1, _, headers_stream_1, _) =
+    h2c_recv_frame(socket, 5000)
   assert headers_type_1 == 1
   assert headers_stream_1 == 1
 
@@ -238,7 +241,8 @@ pub fn it_handles_multiple_requests_same_connection_test() {
     True,
   )
 
-  let #(headers_type_2, _, headers_stream_2, _) = h2c_recv_frame(socket, 5000)
+  let #(headers_type_2, _, headers_stream_2, _) =
+    h2c_recv_frame(socket, 5000)
   assert headers_type_2 == 1
   assert headers_stream_2 == 3
 
@@ -291,7 +295,8 @@ pub fn it_ignores_unknown_frame_type_test() {
   let ping_data = <<3, 3, 3, 3, 3, 3, 3, 3>>
   h2c_send_ping(socket, ping_data)
 
-  let #(frame_type, flags, _stream_id, payload) = h2c_recv_frame(socket, 5000)
+  let #(frame_type, flags, _stream_id, payload) =
+    h2c_recv_frame(socket, 5000)
   assert frame_type == 6
   assert flags == 1
   assert payload == ping_data
@@ -305,7 +310,10 @@ fn many_headers_handler(
   let headers =
     int.range(from: 1, to: 30, with: [], run: fn(acc, i) {
       [
-        #("x-custom-header-" <> int.to_string(i), "value-" <> int.to_string(i)),
+        #(
+          "x-custom-header-" <> int.to_string(i),
+          "value-" <> int.to_string(i),
+        ),
         ..acc
       ]
     })
@@ -323,7 +331,10 @@ pub fn it_sends_continuation_frames_for_large_headers_test() {
   assert settings_type == 4
   assert settings_flags == 0
 
-  h2c_send_frame(socket, <<0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 64>>)
+  h2c_send_frame(
+    socket,
+    <<0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 64>>,
+  )
 
   h2c_send_frame(socket, <<0, 0, 0, 4, 1, 0, 0, 0, 0>>)
 
@@ -343,7 +354,8 @@ pub fn it_sends_continuation_frames_for_large_headers_test() {
     True,
   )
 
-  let #(first_type, first_flags, first_stream, _) = h2c_recv_frame(socket, 5000)
+  let #(first_type, first_flags, first_stream, _) =
+    h2c_recv_frame(socket, 5000)
   assert first_type == 1
   assert first_stream == 1
   let first_end_headers = int.bitwise_and(first_flags, 4) == 4
@@ -355,7 +367,8 @@ pub fn it_sends_continuation_frames_for_large_headers_test() {
 }
 
 fn drain_until_end_headers(socket: H2cSocket) -> Nil {
-  let #(frame_type, flags, _stream_id, _payload) = h2c_recv_frame(socket, 5000)
+  let #(frame_type, flags, _stream_id, _payload) =
+    h2c_recv_frame(socket, 5000)
   case frame_type {
     9 -> {
       let end_headers = int.bitwise_and(flags, 4) == 4
@@ -404,18 +417,26 @@ pub fn it_sends_streaming_data_incrementally_test() {
   let data_frames = collect_data_frames(socket, [])
 
   let non_empty =
-    list.filter(data_frames, fn(payload) { bit_array.byte_size(payload) > 0 })
+    list.filter(data_frames, fn(payload) {
+      bit_array.byte_size(payload) > 0
+    })
   assert list.length(non_empty) >= 2
 
   let combined =
-    list.fold(data_frames, <<>>, fn(acc, payload) { <<acc:bits, payload:bits>> })
+    list.fold(data_frames, <<>>, fn(acc, payload) {
+      <<acc:bits, payload:bits>>
+    })
   assert combined == bit_array.from_string("chunk1chunk2chunk3")
 
   h2c_close(socket)
 }
 
-fn collect_data_frames(socket: H2cSocket, acc: List(BitArray)) -> List(BitArray) {
-  let #(frame_type, flags, _stream_id, payload) = h2c_recv_frame(socket, 5000)
+fn collect_data_frames(
+  socket: H2cSocket,
+  acc: List(BitArray),
+) -> List(BitArray) {
+  let #(frame_type, flags, _stream_id, payload) =
+    h2c_recv_frame(socket, 5000)
   case frame_type {
     0 -> {
       let end_stream = int.bitwise_and(flags, 1) == 1
@@ -426,5 +447,235 @@ fn collect_data_frames(socket: H2cSocket, acc: List(BitArray)) -> List(BitArray)
       }
     }
     _ -> collect_data_frames(socket, acc)
+  }
+}
+
+// --- SSE-over-HTTP/2 test helpers ---
+
+type SSEMsg {
+  SendEvent
+  StopAfterEvent
+}
+
+fn sse_handler(
+  req: Request(Connection),
+) -> response.Response(mist.ResponseData) {
+  mist.server_sent_events(
+    request: req,
+    initial_response: response.new(200),
+    init: fn(subj) {
+      process.send(subj, SendEvent)
+      Nil
+    },
+    loop: fn(_state, msg, conn) {
+      case msg {
+        SendEvent -> {
+          let _ =
+            mist.send_event(
+              conn,
+              mist.event(string_tree.from_string("hello")),
+            )
+          actor.continue(Nil)
+        }
+        StopAfterEvent -> actor.continue(Nil)
+      }
+    },
+  )
+}
+
+fn sse_stop_handler(
+  req: Request(Connection),
+) -> response.Response(mist.ResponseData) {
+  mist.server_sent_events(
+    request: req,
+    initial_response: response.new(200),
+    init: fn(subj) {
+      process.send(subj, StopAfterEvent)
+      Nil
+    },
+    loop: fn(_state, msg, conn) {
+      case msg {
+        StopAfterEvent -> {
+          let _ =
+            mist.send_event(
+              conn,
+              mist.event(string_tree.from_string("goodbye")),
+            )
+          actor.stop()
+        }
+        SendEvent -> {
+          let _ =
+            mist.send_event(
+              conn,
+              mist.event(string_tree.from_string("hello")),
+            )
+          actor.continue(Nil)
+        }
+      }
+    },
+  )
+}
+
+fn drain_until_data_on_stream(
+  socket: H2cSocket,
+  target_stream: Int,
+  timeout: Int,
+) -> #(Int, BitArray) {
+  let #(frame_type, flags, stream_id, payload) =
+    h2c_recv_frame(socket, timeout)
+  case frame_type, stream_id {
+    0, id if id == target_stream -> #(flags, payload)
+    _, _ -> drain_until_data_on_stream(socket, target_stream, timeout)
+  }
+}
+
+fn drain_until_headers_on_stream(
+  socket: H2cSocket,
+  target_stream: Int,
+  timeout: Int,
+) -> Int {
+  let #(frame_type, flags, stream_id, _payload) =
+    h2c_recv_frame(socket, timeout)
+  case frame_type, stream_id {
+    1, id if id == target_stream -> flags
+    _, _ -> drain_until_headers_on_stream(socket, target_stream, timeout)
+  }
+}
+
+pub fn it_handles_sse_over_h2c_test() {
+  use <- scaffold.open_server(19_012, sse_handler)
+
+  let socket = h2c_connect(19_012)
+
+  h2c_send_headers(
+    socket,
+    1,
+    [
+      #(":method", "GET"),
+      #(":path", "/"),
+      #(":scheme", "http"),
+      #(":authority", "localhost"),
+    ],
+    True,
+  )
+
+  let _headers_flags = drain_until_headers_on_stream(socket, 1, 5000)
+
+  let #(_data_flags, data_payload) =
+    drain_until_data_on_stream(socket, 1, 5000)
+  assert data_payload == bit_array.from_string("data: hello\n\n")
+
+  let ping_data = <<12, 12, 12, 12, 12, 12, 12, 12>>
+  h2c_send_ping(socket, ping_data)
+  drain_until_ping_ack(socket, ping_data)
+
+  h2c_close(socket)
+}
+
+pub fn it_sse_does_not_crash_concurrent_streams_test() {
+  let combined_handler = fn(req: Request(Connection)) {
+    case req.path {
+      "/sse" -> sse_handler(req)
+      _ -> simple_handler(req)
+    }
+  }
+  use <- scaffold.open_server(19_013, combined_handler)
+
+  let socket = h2c_connect(19_013)
+
+  h2c_send_headers(
+    socket,
+    1,
+    [
+      #(":method", "GET"),
+      #(":path", "/sse"),
+      #(":scheme", "http"),
+      #(":authority", "localhost"),
+    ],
+    True,
+  )
+
+  let _headers_flags = drain_until_headers_on_stream(socket, 1, 5000)
+
+  h2c_send_headers(
+    socket,
+    3,
+    [
+      #(":method", "GET"),
+      #(":path", "/"),
+      #(":scheme", "http"),
+      #(":authority", "localhost"),
+    ],
+    True,
+  )
+
+  let _headers_3_flags = drain_until_headers_on_stream(socket, 3, 5000)
+
+  let #(_data_flags, data_payload) =
+    drain_until_data_on_stream(socket, 3, 5000)
+  assert data_payload == bit_array.from_string("hello")
+
+  let ping_data = <<13, 13, 13, 13, 13, 13, 13, 13>>
+  h2c_send_ping(socket, ping_data)
+  drain_until_ping_ack(socket, ping_data)
+
+  h2c_close(socket)
+}
+
+pub fn it_closes_sse_stream_on_actor_stop_test() {
+  use <- scaffold.open_server(19_014, sse_stop_handler)
+
+  let socket = h2c_connect(19_014)
+
+  h2c_send_headers(
+    socket,
+    1,
+    [
+      #(":method", "GET"),
+      #(":path", "/"),
+      #(":scheme", "http"),
+      #(":authority", "localhost"),
+    ],
+    True,
+  )
+
+  let _headers_flags = drain_until_headers_on_stream(socket, 1, 5000)
+
+  let data_frames = collect_data_frames_on_stream(socket, 1, [])
+
+  let combined =
+    list.fold(data_frames, <<>>, fn(acc, payload) {
+      <<acc:bits, payload:bits>>
+    })
+  let assert True =
+    bit_array.byte_size(combined) >= bit_array.byte_size(<<
+      "data: goodbye\n\n":utf8,
+    >>)
+
+  let ping_data = <<14, 14, 14, 14, 14, 14, 14, 14>>
+  h2c_send_ping(socket, ping_data)
+  drain_until_ping_ack(socket, ping_data)
+
+  h2c_close(socket)
+}
+
+fn collect_data_frames_on_stream(
+  socket: H2cSocket,
+  target_stream: Int,
+  acc: List(BitArray),
+) -> List(BitArray) {
+  let #(frame_type, flags, stream_id, payload) =
+    h2c_recv_frame(socket, 5000)
+  case frame_type, stream_id {
+    0, id if id == target_stream -> {
+      let end_stream = int.bitwise_and(flags, 1) == 1
+      let new_acc = [payload, ..acc]
+      case end_stream {
+        True -> list.reverse(new_acc)
+        False ->
+          collect_data_frames_on_stream(socket, target_stream, new_acc)
+      }
+    }
+    _, _ -> collect_data_frames_on_stream(socket, target_stream, acc)
   }
 }

@@ -8,6 +8,11 @@
 - Add CONTINUATION frame support for large HPACK-encoded header blocks
 - Send streaming response bodies incrementally over HTTP/2 instead of buffering
 - Clean up completed streams from connection state after response is sent
+- Add HTTP/2 Server-Sent Events support via message-passing through the
+  connection handler instead of `controlling_process` socket ownership transfer.
+  Includes process monitoring for automatic stream cleanup when the SSE actor
+  stops, and filtering of the `connection: keep-alive` header forbidden by
+  RFC 9113 Section 8.2.2
 
 # v6.0.2
 

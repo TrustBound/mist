@@ -1,3 +1,4 @@
+import gleam/bytes_tree.{type BytesTree}
 import gleam/erlang/process.{type Selector, type Subject}
 import gleam/http.{type Header} as ghttp
 import gleam/http/request.{type Request}
@@ -24,6 +25,16 @@ pub type Message {
 
 pub type SendMessage {
   Send(identifier: StreamIdentifier(Frame), resp: Response(ResponseData))
+  StreamHeaders(
+    identifier: StreamIdentifier(Frame),
+    status: Int,
+    headers: List(#(String, String)),
+  )
+  StreamData(
+    identifier: StreamIdentifier(Frame),
+    data: BytesTree,
+    end_stream: Bool,
+  )
 }
 
 pub type StreamState {
@@ -80,9 +91,19 @@ pub fn new(
           |> list.key_find("content-length")
           |> result.try(int.parse)
           |> result.unwrap(0)
+        let h2_sender =
+          http.new_h2_stream_sender(
+            send_headers: fn(status, hdrs) {
+              process.send(sender, StreamHeaders(identifier, status, hdrs))
+            },
+            send_data: fn(data, end_stream) {
+              process.send(sender, StreamData(identifier, data, end_stream))
+            },
+          )
         let conn =
           Connection(
             ..connection,
+            h2_sender: Some(h2_sender),
             body: Stream(
               selector: process.map_selector(state.data_selector, fn(val) {
                 let assert Data(bits, ..) = val
