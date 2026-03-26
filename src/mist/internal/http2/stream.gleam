@@ -124,7 +124,7 @@ pub fn new(
           Ok(value) -> {
             let resp = handler(value)
             process.send(sender, Send(identifier, resp))
-            actor.continue(InternalState(..state, end: True, pending_response: None))
+            actor.stop()
           }
           Error(err) ->
             actor.stop_abnormal(
