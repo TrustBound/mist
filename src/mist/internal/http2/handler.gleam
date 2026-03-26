@@ -48,6 +48,10 @@ pub fn append_data(state: State, data: BitArray) -> State {
   State(..state, frame_buffer: buffer.append(state.frame_buffer, data))
 }
 
+pub fn remove_stream(state: State, id: StreamIdentifier(Frame)) -> State {
+  State(..state, streams: dict.delete(state.streams, id))
+}
+
 pub fn upgrade(
   data: BitArray,
   conn: Connection,
@@ -166,32 +170,51 @@ fn handle_frame(
       case frame.get_stream_identifier(identifier) {
         0 -> {
           case flow_control.update_send_window(state.send_window_size, amount) {
-            Ok(new_window) ->
-              Ok(State(..state, send_window_size: new_window))
+            Ok(new_window) -> Ok(State(..state, send_window_size: new_window))
             _err -> Error("Connection flow control error")
           }
         }
         _stream_id -> {
-          state.streams
-          |> dict.get(identifier)
-          |> result.replace_error("Window update for non-existent stream")
-          |> result.try(fn(stream) {
-            case
-              flow_control.update_send_window(stream.send_window_size, amount)
-            {
-              Ok(update) -> {
-                let new_stream =
-                  stream.State(..stream, send_window_size: update)
-                Ok(
-                  State(
-                    ..state,
-                    streams: dict.insert(state.streams, identifier, new_stream),
-                  ),
-                )
+          case dict.get(state.streams, identifier) {
+            Error(Nil) -> Ok(state)
+            Ok(stream) -> {
+              case
+                flow_control.update_send_window(stream.send_window_size, amount)
+              {
+                Ok(update) -> {
+                  let new_stream =
+                    stream.State(..stream, send_window_size: update)
+                  Ok(
+                    State(
+                      ..state,
+                      streams: dict.insert(
+                        state.streams,
+                        identifier,
+                        new_stream,
+                      ),
+                    ),
+                  )
+                }
+                _err -> {
+                  let _ =
+                    http2.send_frame(
+                      frame.Termination(
+                        error: frame.FlowControlError,
+                        identifier: identifier,
+                      ),
+                      conn.socket,
+                      conn.transport,
+                    )
+                  Ok(
+                    State(
+                      ..state,
+                      streams: dict.delete(state.streams, identifier),
+                    ),
+                  )
+                }
               }
-              _err -> Error("Failed to update send window")
             }
-          })
+          }
         }
       }
     }
@@ -239,55 +262,61 @@ fn handle_frame(
     }
     None, frame.Data(identifier: identifier, data: data, end_stream: end_stream)
     -> {
-      let data_size = bit_array.byte_size(data)
-      let #(conn_receive_window_size, conn_window_increment) =
-        flow_control.compute_receive_window(
-          state.receive_window_size,
-          data_size,
-        )
-
-      state.streams
-      |> dict.get(identifier)
-      |> result.map(stream.receive_data(_, data_size))
-      // TODO:  this whole business should much more gracefully handle
-      // individual stream errors rather than just blowin up
-      |> result.replace_error("Stream failed to receive data")
-      // TODO:  handle end of stream?
-      |> result.map(fn(update) {
-        let #(new_stream, increment) = update
-        let _ = case conn_window_increment > 0 {
-          True -> {
+      case dict.get(state.streams, identifier) {
+        Error(Nil) -> {
+          let _ =
             http2.send_frame(
-              frame.WindowUpdate(
-                identifier: frame.stream_identifier(0),
-                amount: conn_window_increment,
+              frame.Termination(
+                error: frame.StreamClosed,
+                identifier: identifier,
               ),
               conn.socket,
               conn.transport,
             )
-          }
-          False -> Ok(Nil)
+          Ok(state)
         }
-        let _ = case increment > 0 {
-          True -> {
-            http2.send_frame(
-              frame.WindowUpdate(identifier: identifier, amount: increment),
-              conn.socket,
-              conn.transport,
+        Ok(stream) -> {
+          let data_size = bit_array.byte_size(data)
+          let #(conn_receive_window_size, conn_window_increment) =
+            flow_control.compute_receive_window(
+              state.receive_window_size,
+              data_size,
             )
+          let #(new_stream, increment) = stream.receive_data(stream, data_size)
+          let _ = case conn_window_increment > 0 {
+            True ->
+              http2.send_frame(
+                frame.WindowUpdate(
+                  identifier: frame.stream_identifier(0),
+                  amount: conn_window_increment,
+                ),
+                conn.socket,
+                conn.transport,
+              )
+            False -> Ok(Nil)
           }
-          False -> Ok(Nil)
+          let _ = case increment > 0 {
+            True ->
+              http2.send_frame(
+                frame.WindowUpdate(identifier: identifier, amount: increment),
+                conn.socket,
+                conn.transport,
+              )
+            False -> Ok(Nil)
+          }
+          process.send(
+            new_stream.subject,
+            stream.Data(bits: data, end: end_stream),
+          )
+          Ok(
+            State(
+              ..state,
+              streams: dict.insert(state.streams, identifier, new_stream),
+              receive_window_size: conn_receive_window_size,
+            ),
+          )
         }
-        process.send(
-          new_stream.subject,
-          stream.Data(bits: data, end: end_stream),
-        )
-        State(
-          ..state,
-          streams: dict.insert(state.streams, identifier, new_stream),
-          receive_window_size: conn_receive_window_size,
-        )
-      })
+      }
     }
     None, frame.Priority(..) -> {
       Ok(state)
