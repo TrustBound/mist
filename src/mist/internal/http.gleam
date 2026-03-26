@@ -1,5 +1,6 @@
 import gleam/bit_array
 import gleam/bytes_tree.{type BytesTree}
+import gleam/yielder.{type Yielder}
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -29,6 +30,7 @@ pub type ResponseData {
   Websocket
   Bytes(BytesTree)
   Chunked
+  Streaming(Yielder(BytesTree))
   File(descriptor: file.FileDescriptor, offset: Int, length: Int)
   ServerSentEvents
 }

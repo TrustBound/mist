@@ -5,13 +5,14 @@ import gleam/option.{type Option, Some}
 import gleam/otp/actor
 import gleam/otp/factory_supervisor as factory
 import gleam/result
+import gleam/yielder
 import glisten.{type Loop, Packet, User}
 import glisten/transport
 import logging
 import mist/internal/encoder
 import mist/internal/http.{
   type DecodeError, type Handler, Bytes, Chunked, Connection, DiscardPacket,
-  File, Initial, ServerSentEvents, Websocket,
+  File, Initial, ServerSentEvents, Streaming, Websocket,
 }
 import mist/internal/http/handler as http_handler
 import mist/internal/http2
@@ -71,8 +72,16 @@ pub fn with_func(
             |> response.set_body(bytes)
             |> http2.send_bytes_tree(conn, state.send_hpack_context, id)
           }
+          Streaming(stream) -> {
+            let combined =
+              yielder.fold(stream, bytes_tree.new(), fn(acc, chunk) {
+                bytes_tree.append_tree(acc, chunk)
+              })
+            resp
+            |> response.set_body(combined)
+            |> http2.send_bytes_tree(conn, state.send_hpack_context, id)
+          }
           File(..) -> Error("File sending unsupported over HTTP/2")
-          // TODO:  properly error in some fashion for these
           Websocket -> Error("WebSocket unsupported for HTTP/2")
           Chunked -> Error("Chunked encoding not supported for HTTP/2")
           ServerSentEvents -> Error("Server-Sent Events unsupported for HTTP/2")
