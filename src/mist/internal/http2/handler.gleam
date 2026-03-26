@@ -9,7 +9,7 @@ import gleam/string
 import logging
 import mist/internal/buffer.{type Buffer}
 import mist/internal/http.{type Connection, type Handler, Connection, Initial}
-import mist/internal/http2.{type HpackContext, type Http2Settings, Http2Settings}
+import mist/internal/http2.{type HpackContext, type Http2Settings}
 import mist/internal/http2/flow_control
 import mist/internal/http2/frame.{
   type Frame, type StreamIdentifier, Complete, Continued,
@@ -24,6 +24,7 @@ pub type State {
   State(
     fragment: Option(Frame),
     frame_buffer: Buffer,
+    last_stream_id: StreamIdentifier(Frame),
     pending_sends: List(PendingSend),
     receive_hpack_context: HpackContext,
     self: Subject(SendMessage),
@@ -63,6 +64,7 @@ pub fn upgrade(
   State(
     fragment: None,
     frame_buffer: buffer.new(data),
+    last_stream_id: frame.stream_identifier(0),
     pending_sends: [],
     receive_hpack_context: http2.hpack_new_context(
       initial_settings.header_table_size,
@@ -92,11 +94,20 @@ pub fn call(
       }
     }
     Error(frame.NoError) -> Ok(state)
-    Error(_connection_error) -> {
-      // TODO:
-      //  - send GOAWAY with last good stream ID
-      //  - close the connection
-      Ok(state)
+    Error(connection_error) -> {
+      case bit_array.byte_size(state.frame_buffer.data) < 9 {
+        True -> Ok(state)
+        False -> {
+          let goaway =
+            frame.GoAway(
+              data: <<>>,
+              error: connection_error,
+              last_stream_id: state.last_stream_id,
+            )
+          let _ = http2.send_frame(goaway, conn.socket, conn.transport)
+          Error(Error("Connection error"))
+        }
+      }
     }
   }
 }
@@ -154,16 +165,11 @@ fn handle_frame(
     None, frame.WindowUpdate(amount, identifier) -> {
       case frame.get_stream_identifier(identifier) {
         0 -> {
-          // do_pending_sends(state)
-          Ok(
-            State(
-              ..state,
-              settings: Http2Settings(
-                ..state.settings,
-                initial_window_size: amount,
-              ),
-            ),
-          )
+          case flow_control.update_send_window(state.send_window_size, amount) {
+            Ok(new_window) ->
+              Ok(State(..state, send_window_size: new_window))
+            _err -> Error("Connection flow control error")
+          }
         }
         _stream_id -> {
           state.streams
@@ -222,7 +228,14 @@ fn handle_frame(
           pending_content_length: pending_content_length,
         )
       let streams = dict.insert(state.streams, identifier, stream_state)
-      Ok(State(..state, receive_hpack_context: context, streams: streams))
+      Ok(
+        State(
+          ..state,
+          receive_hpack_context: context,
+          streams: streams,
+          last_stream_id: identifier,
+        ),
+      )
     }
     None, frame.Data(identifier: identifier, data: data, end_stream: end_stream)
     -> {
@@ -282,18 +295,83 @@ fn handle_frame(
     None, frame.Settings(ack: True, ..) -> {
       Ok(state)
     }
-    // TODO:  update any settings from this
-    _, frame.Settings(..) -> {
+    _, frame.Settings(ack: False, settings: settings_list) -> {
+      let old_settings = state.settings
+      let new_settings = http2.update_settings(old_settings, settings_list)
+      let delta =
+        new_settings.initial_window_size - old_settings.initial_window_size
+      let max_window = int.bitwise_shift_left(1, 31) - 1
+
+      let new_streams = case delta != 0 {
+        True -> {
+          let adjusted =
+            dict.map_values(state.streams, fn(_id, s) {
+              stream.State(..s, send_window_size: s.send_window_size + delta)
+            })
+          let overflow =
+            dict.fold(adjusted, False, fn(acc, _id, s) {
+              acc || s.send_window_size > max_window
+            })
+          case overflow {
+            True -> {
+              let goaway =
+                frame.GoAway(
+                  data: <<>>,
+                  error: frame.FlowControlError,
+                  last_stream_id: state.last_stream_id,
+                )
+              let _ = http2.send_frame(goaway, conn.socket, conn.transport)
+              Error("Flow control window overflow from settings")
+            }
+            False -> Ok(adjusted)
+          }
+        }
+        False -> Ok(state.streams)
+      }
+
+      use new_streams <- result.try(new_streams)
+
+      let new_send_context = case
+        new_settings.header_table_size != old_settings.header_table_size
+      {
+        True ->
+          http2.hpack_max_table_size(
+            state.send_hpack_context,
+            new_settings.header_table_size,
+          )
+        False -> state.send_hpack_context
+      }
+
       http2.send_frame(frame.settings_ack(), conn.socket, conn.transport)
-      |> result.replace(state)
+      |> result.replace(
+        State(
+          ..state,
+          settings: new_settings,
+          streams: new_streams,
+          send_hpack_context: new_send_context,
+        ),
+      )
       |> result.replace_error("Failed to respond to settings ACK")
     }
+    None, frame.Ping(ack: False, data: data) -> {
+      http2.send_frame(
+        frame.Ping(ack: True, data: data),
+        conn.socket,
+        conn.transport,
+      )
+      |> result.replace(state)
+      |> result.replace_error("Failed to send PING ACK")
+    }
+    None, frame.Ping(ack: True, ..) -> {
+      Ok(state)
+    }
+    None, frame.Termination(identifier: identifier, ..) -> {
+      Ok(State(..state, streams: dict.delete(state.streams, identifier)))
+    }
     None, frame.GoAway(..) -> {
-      logging.log(logging.Debug, "byteeee~~")
-      // TODO:  Normal exit
+      logging.log(logging.Info, "Received GOAWAY, closing connection")
       Error("Going away...")
     }
-    // TODO:  obviously fill these out
     _, frame -> {
       logging.log(logging.Debug, "Ignoring frame: " <> string.inspect(frame))
       Ok(state)

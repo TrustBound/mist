@@ -1,3 +1,4 @@
+import gleam/bit_array
 import gleam/bytes_tree.{type BytesTree}
 import gleam/http.{type Header} as _ghttp
 import gleam/http/response.{type Response}
@@ -93,26 +94,72 @@ fn send_data(
   data: BitArray,
   stream_identifier: StreamIdentifier(Frame),
   end_stream: Bool,
+  max_frame_size: Int,
 ) -> Result(Nil, String) {
-  let data_frame =
-    Data(data: data, end_stream: end_stream, identifier: stream_identifier)
-  let encoded = frame.encode(data_frame)
-
-  transport.send(
-    conn.transport,
-    conn.socket,
-    bytes_tree.from_bit_array(encoded),
-  )
-  |> result.map_error(fn(err) {
-    logging.log(
-      logging.Debug,
-      "failed to send :(  " <> socket.reason_to_string(err),
-    )
-    "Failed to send HTTP/2 data"
-  })
+  let size = bit_array.byte_size(data)
+  case size <= max_frame_size {
+    True -> {
+      let data_frame =
+        Data(
+          data: data,
+          end_stream: end_stream,
+          identifier: stream_identifier,
+        )
+      transport.send(
+        conn.transport,
+        conn.socket,
+        bytes_tree.from_bit_array(frame.encode(data_frame)),
+      )
+      |> result.map_error(fn(err) {
+        logging.log(
+          logging.Debug,
+          "Failed to send HTTP/2 data: "
+            <> socket.reason_to_string(err),
+        )
+        "Failed to send HTTP/2 data"
+      })
+    }
+    False -> {
+      let chunk = bit_array.slice(data, 0, max_frame_size)
+      let rest =
+        bit_array.slice(data, max_frame_size, size - max_frame_size)
+      case chunk, rest {
+        Ok(chunk_data), Ok(rest_data) -> {
+          let chunk_frame =
+            Data(
+              data: chunk_data,
+              end_stream: False,
+              identifier: stream_identifier,
+            )
+          use _nil <- result.try(
+            transport.send(
+              conn.transport,
+              conn.socket,
+              bytes_tree.from_bit_array(frame.encode(chunk_frame)),
+            )
+            |> result.map_error(fn(err) {
+              logging.log(
+                logging.Debug,
+                "Failed to send HTTP/2 data: "
+                  <> socket.reason_to_string(err),
+              )
+              "Failed to send HTTP/2 data"
+            }),
+          )
+          send_data(
+            conn,
+            rest_data,
+            stream_identifier,
+            end_stream,
+            max_frame_size,
+          )
+        }
+        _, _ -> Error("Failed to slice HTTP/2 data frame")
+      }
+    }
+  }
 }
 
-// TODO:  handle max frame size
 pub fn send_frame(
   frame_to_send: Frame,
   socket: Socket,
@@ -128,6 +175,7 @@ pub fn send_bytes_tree(
   conn: Connection,
   context: HpackContext,
   id: StreamIdentifier(Frame),
+  settings: Http2Settings,
 ) -> Result(HpackContext, String) {
   let resp =
     resp
@@ -140,9 +188,13 @@ pub fn send_bytes_tree(
     _ -> {
       send_headers(context, conn, headers, False, id)
       |> result.try(fn(context) {
-        // TODO:  this should be broken up by window size
-        // TODO:  fix end_stream
-        send_data(conn, bytes_tree.to_bit_array(resp.body), id, True)
+        send_data(
+          conn,
+          bytes_tree.to_bit_array(resp.body),
+          id,
+          True,
+          settings.max_frame_size,
+        )
         |> result.replace(context)
       })
     }
