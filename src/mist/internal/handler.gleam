@@ -68,7 +68,12 @@ pub fn with_func(
           Bytes(bytes) -> {
             resp
             |> response.set_body(bytes)
-            |> http2.send_bytes_tree(conn, state.send_hpack_context, id)
+            |> http2.send_bytes_tree(
+              conn,
+              state.send_hpack_context,
+              id,
+              state.settings,
+            )
           }
           Streaming(stream) -> {
             let combined =
@@ -77,7 +82,12 @@ pub fn with_func(
               })
             resp
             |> response.set_body(combined)
-            |> http2.send_bytes_tree(conn, state.send_hpack_context, id)
+            |> http2.send_bytes_tree(
+              conn,
+              state.send_hpack_context,
+              id,
+              state.settings,
+            )
           }
           File(..) -> Error("File sending unsupported over HTTP/2")
           Websocket -> Error("WebSocket unsupported for HTTP/2")

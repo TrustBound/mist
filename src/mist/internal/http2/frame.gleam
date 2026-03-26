@@ -373,9 +373,9 @@ fn parse_go_away(
       _reserved:size(1),
       last_stream_id:size(31),
       error:size(32),
-      data:bytes-size(length),
+      data:bytes-size(length - 8),
     >>
-      if identifier == 0
+      if identifier == 0 && length >= 8
     -> {
       Ok(GoAway(
         data: data,
@@ -402,8 +402,8 @@ fn parse_window_update(
         identifier: stream_identifier(identifier),
       ))
     }
-    4, _ -> Error(FrameSizeError)
-    _, _ -> Error(ProtocolError)
+    4, _ -> Error(ProtocolError)
+    _, _ -> Error(FrameSizeError)
   }
 }
 
@@ -482,7 +482,7 @@ pub fn encode(frame: Frame) -> BitArray {
       let exclusive = from_bool(exclusive)
       <<
         5:size(24),
-        2:size(2),
+        2:size(8),
         0:size(8),
         0:size(1),
         identifier:size(31),
@@ -539,7 +539,7 @@ pub fn encode(frame: Frame) -> BitArray {
     Ping(ack, data) -> {
       let ack = from_bool(ack)
       <<
-        0:size(24),
+        8:size(24),
         6:size(8),
         0:size(7),
         ack:size(1),
@@ -550,7 +550,7 @@ pub fn encode(frame: Frame) -> BitArray {
     }
     GoAway(data, error, StreamIdentifier(last_stream_id)) -> {
       let error = encode_error(error)
-      let payload_size = bit_array.byte_size(data)
+      let payload_size = 8 + bit_array.byte_size(data)
       <<
         payload_size:size(24),
         7:size(8),
