@@ -26,7 +26,7 @@ import mist/internal/encoder
 import mist/internal/file
 import mist/internal/handler
 import mist/internal/http.{
-  type Connection as InternalConnection,
+  type Connection as InternalConnection, type H2StreamSender,
   type ResponseData as InternalResponseData, Bytes as InternalBytes,
   Chunked as InternalChunked, File as InternalFile,
   ServerSentEvents as InternalServerSentEvents,
@@ -752,6 +752,7 @@ pub fn send_text_frame(
 // is provided.
 pub opaque type SSEConnection {
   SSEConnection(Connection)
+  H2SSE(H2StreamSender)
 }
 
 // Represents each event.  Only `data` is required.  The `event` name will
@@ -801,6 +802,19 @@ pub fn server_sent_events(
   initial_response resp: Response(discard),
   init init: fn(Subject(message)) -> state,
   loop loop: fn(state, message, SSEConnection) -> actor.Next(state, message),
+) -> Response(ResponseData) {
+  case req.body.h2_sender {
+    Some(h2_sender) ->
+      h2_server_sent_events(req, resp, init, loop, h2_sender)
+    None -> h1_server_sent_events(req, resp, init, loop)
+  }
+}
+
+fn h1_server_sent_events(
+  req: Request(Connection),
+  resp: Response(discard),
+  init: fn(Subject(message)) -> state,
+  loop: fn(state, message, SSEConnection) -> actor.Next(state, message),
 ) -> Response(ResponseData) {
   let with_default_headers =
     resp
@@ -859,12 +873,63 @@ pub fn server_sent_events(
   }
 }
 
-// This constructs an event from the provided type.  If `id`, `event` or `retry` are
-// provided, they are included in the message.  The data provided is split
-// across newlines, which I think is per the spec? The `Result` returned here
-// can be used to determine whether the event send has succeeded.
-pub fn send_event(conn: SSEConnection, event: SSEEvent) -> Result(Nil, Nil) {
-  let SSEConnection(conn) = conn
+fn h2_server_sent_events(
+  req: Request(Connection),
+  resp: Response(discard),
+  init: fn(Subject(message)) -> state,
+  loop: fn(state, message, SSEConnection) -> actor.Next(state, message),
+  h2_sender: H2StreamSender,
+) -> Response(ResponseData) {
+  let headers =
+    resp
+    |> response.set_header("content-type", "text/event-stream")
+    |> response.set_header("cache-control", "no-cache")
+    |> fn(r) { r.headers }
+    |> list.filter(fn(h) { h.0 != "connection" })
+
+  http.h2_send_headers(h2_sender, 200, headers)
+
+  let start = fn() {
+    actor.new_with_initialiser(1000, fn(subj) {
+      init(subj)
+      |> actor.initialised
+      |> actor.returning(process.self())
+      |> actor.selecting(process.new_selector() |> process.select(subj))
+      |> Ok
+    })
+    |> actor.on_message(fn(state, message) {
+      loop(state, message, H2SSE(h2_sender))
+    })
+    |> actor.start
+    |> result.map(fn(started) {
+      let pid = started.data
+      actor.Started(pid, pid)
+    })
+  }
+  let factory_supervisor = factory.get_by_name(req.body.factory_name)
+  case factory.start_child(factory_supervisor, start) {
+    Ok(started) -> {
+      let sse_pid = started.data
+      let _monitor_pid =
+        process.spawn_unlinked(fn() {
+          let monitor = process.monitor(sse_pid)
+          let selector =
+            process.new_selector()
+            |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+          process.selector_receive_forever(selector)
+          http.h2_send_data(h2_sender, bytes_tree.new(), True)
+        })
+      response.new(200) |> response.set_body(ServerSentEvents)
+    }
+    Error(_start_error) -> {
+      logging.log(logging.Error, "Failed to start SSE process")
+      response.new(400)
+      |> response.set_body(Bytes(bytes_tree.new()))
+    }
+  }
+}
+
+fn build_sse_message(event: SSEEvent) -> BytesTree {
   let id =
     event.id
     |> option.map(fn(id) { "id: " <> id <> "\n" })
@@ -883,17 +948,30 @@ pub fn send_event(conn: SSEConnection, event: SSEEvent) -> Result(Nil, Nil) {
     |> list.map(fn(row) { string_tree.prepend(row, "data: ") })
     |> string_tree.join("\n")
 
-  let message =
-    data
-    |> string_tree.prepend(event_name)
-    |> string_tree.prepend(id)
-    |> string_tree.prepend(retry)
-    |> string_tree.append("\n\n")
-    |> bytes_tree.from_string_tree
+  data
+  |> string_tree.prepend(event_name)
+  |> string_tree.prepend(id)
+  |> string_tree.prepend(retry)
+  |> string_tree.append("\n\n")
+  |> bytes_tree.from_string_tree
+}
 
-  transport.send(conn.transport, conn.socket, message)
-  |> result.replace(Nil)
-  |> result.replace_error(Nil)
+// This constructs an event from the provided type.  If `id`, `event` or `retry` are
+// provided, they are included in the message.  The data provided is split
+// across newlines, which I think is per the spec? The `Result` returned here
+// can be used to determine whether the event send has succeeded.
+pub fn send_event(conn: SSEConnection, event: SSEEvent) -> Result(Nil, Nil) {
+  let message = build_sse_message(event)
+  case conn {
+    SSEConnection(conn) ->
+      transport.send(conn.transport, conn.socket, message)
+      |> result.replace(Nil)
+      |> result.replace_error(Nil)
+    H2SSE(sender) -> {
+      http.h2_send_data(sender, message, False)
+      Ok(Nil)
+    }
+  }
 }
 
 pub type ChunkNext(state) {

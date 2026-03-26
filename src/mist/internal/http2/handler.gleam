@@ -170,7 +170,8 @@ fn handle_frame(
       case frame.get_stream_identifier(identifier) {
         0 -> {
           case flow_control.update_send_window(state.send_window_size, amount) {
-            Ok(new_window) -> Ok(State(..state, send_window_size: new_window))
+            Ok(new_window) ->
+              Ok(State(..state, send_window_size: new_window))
             _err -> Error("Connection flow control error")
           }
         }

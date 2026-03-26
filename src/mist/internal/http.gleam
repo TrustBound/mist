@@ -35,6 +35,36 @@ pub type ResponseData {
   ServerSentEvents
 }
 
+pub opaque type H2StreamSender {
+  H2StreamSender(
+    send_headers: fn(Int, List(#(String, String))) -> Nil,
+    send_data: fn(BytesTree, Bool) -> Nil,
+  )
+}
+
+pub fn new_h2_stream_sender(
+  send_headers send_headers: fn(Int, List(#(String, String))) -> Nil,
+  send_data send_data: fn(BytesTree, Bool) -> Nil,
+) -> H2StreamSender {
+  H2StreamSender(send_headers:, send_data:)
+}
+
+pub fn h2_send_headers(
+  sender: H2StreamSender,
+  status: Int,
+  headers: List(#(String, String)),
+) -> Nil {
+  sender.send_headers(status, headers)
+}
+
+pub fn h2_send_data(
+  sender: H2StreamSender,
+  data: BytesTree,
+  end_stream: Bool,
+) -> Nil {
+  sender.send_data(data, end_stream)
+}
+
 pub type Connection {
   Connection(
     body: Body,
@@ -46,6 +76,7 @@ pub type Connection {
         process.Pid,
       ),
     ),
+    h2_sender: Option(H2StreamSender),
   )
 }
 
