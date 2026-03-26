@@ -2,6 +2,8 @@
 
 # Unreleased
 
+- Fix HTTP/2 stream actors leaking after request completion by stopping
+  the actor once the handler returns instead of looping indefinitely
 - Fix HTTP/2 connection closure after first request by handling stream errors
   gracefully instead of closing the connection
 - Ignore unknown HTTP/2 frame types per RFC 9113 Section 4.1
