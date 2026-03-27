@@ -2,19 +2,28 @@
 
 # Unreleased
 
-- Fix HTTP/2 stream actors leaking after request completion by stopping
-  the actor once the handler returns instead of looping indefinitely
+- Fix HTTP/2 pseudo-header routing — requests were matched without the `:`
+  prefix, causing all HTTP/2 requests to route to `"/"`
+- Fix HTTP/2 response delivery deadlock for requests with a body
 - Fix HTTP/2 connection closure after first request by handling stream errors
   gracefully instead of closing the connection
-- Ignore unknown HTTP/2 frame types per RFC 9113 Section 4.1
-- Add CONTINUATION frame support for large HPACK-encoded header blocks
-- Send streaming response bodies incrementally over HTTP/2 instead of buffering
-- Clean up completed streams from connection state after response is sent
+- Fix HTTP/2 stream actors leaking after request completion by stopping the
+  actor once the handler returns instead of looping indefinitely
+- Fix HTTP/2 frame encoding/decoding bugs for PING, GoAway, Priority, and
+  WindowUpdate frames per RFC 9113
+- Add HTTP/2 support for `Chunked` responses via message-passing through the
+  connection handler, with process monitoring for automatic stream cleanup
 - Add HTTP/2 Server-Sent Events support via message-passing through the
   connection handler instead of `controlling_process` socket ownership transfer.
   Includes process monitoring for automatic stream cleanup when the SSE actor
   stops, and filtering of the `connection: keep-alive` header forbidden by
   RFC 9113 Section 8.2.2
+- Add HTTP/2 PING ACK, SETTINGS, and RST_STREAM frame handling
+- Add CONTINUATION frame support for large HPACK-encoded header blocks
+- Ignore unknown HTTP/2 frame types per RFC 9113 Section 4.1
+- Handle `:authority` pseudo-header by setting the request host
+- Respect `max_frame_size` SETTINGS when sending HTTP/2 DATA frames
+- Clean up completed streams from connection state after response is sent
 
 # v6.0.2
 

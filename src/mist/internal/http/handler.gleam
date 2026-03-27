@@ -8,7 +8,6 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
-import gleam/yielder
 import glisten/internal/handler.{Close, Internal}
 import glisten/socket.{type Socket, type SocketReason, Badarg}
 import glisten/transport.{type Transport}
@@ -17,7 +16,7 @@ import mist/internal/encoder
 import mist/internal/file
 import mist/internal/http.{
   type Connection, type Handler, type ResponseData, Bytes, Chunked, File,
-  ServerSentEvents, Streaming, Websocket,
+  ServerSentEvents, Websocket,
 }
 
 pub type State {
@@ -54,8 +53,6 @@ pub fn call(
           Bytes(body) ->
             handle_bytes_tree_body(resp, body, req.body, req, version)
           File(..) -> handle_file_body(resp, body, req.body, version)
-          Streaming(yielder) ->
-            handle_streaming_body(resp, yielder, req.body, version)
           _ -> panic as "This shouldn't ever happen 🤞"
         }
         |> result.replace_error(Ok(Nil))
@@ -174,56 +171,6 @@ fn handle_file_body(
   }
 
   return
-}
-
-fn handle_streaming_body(
-  resp: response.Response(ResponseData),
-  stream: yielder.Yielder(BytesTree),
-  conn: Connection,
-  version: http.HttpVersion,
-) -> Result(response.Response(BytesTree), SocketReason) {
-  let headers = [#("transfer-encoding", "chunked"), ..resp.headers]
-  let header_payload =
-    encoder.response_builder(
-      resp.status,
-      headers,
-      http.version_to_string(version),
-    )
-
-  use _nil <- result.try(transport.send(
-    conn.transport,
-    conn.socket,
-    header_payload,
-  ))
-
-  yielder.each(stream, fn(chunk) {
-    let size = bytes_tree.byte_size(chunk)
-    let encoded =
-      size
-      |> int_to_hex
-      |> bytes_tree.from_string
-      |> bytes_tree.append_string("\r\n")
-      |> bytes_tree.append_tree(chunk)
-      |> bytes_tree.append_string("\r\n")
-    let _ = transport.send(conn.transport, conn.socket, encoded)
-    Nil
-  })
-
-  let final_chunk = bytes_tree.from_string("0\r\n\r\n")
-  use _nil <- result.try(transport.send(
-    conn.transport,
-    conn.socket,
-    final_chunk,
-  ))
-
-  Ok(response.set_body(resp, bytes_tree.new()))
-}
-
-@external(erlang, "erlang", "integer_to_list")
-fn integer_to_list(int int: Int, base base: Int) -> String
-
-fn int_to_hex(int: Int) -> String {
-  integer_to_list(int, 16)
 }
 
 fn handle_bytes_tree_body(

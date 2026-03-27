@@ -1,8 +1,9 @@
 import gleam/bytes_tree
+import gleam/dict
 import gleam/erlang/process.{type Selector, type Subject}
 import gleam/http/response
 import gleam/int
-import gleam/option.{type Option, Some}
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/otp/factory_supervisor as factory
 import gleam/result
@@ -10,7 +11,7 @@ import glisten.{type Loop, Packet, User}
 import logging
 import mist/internal/http.{
   type DecodeError, type Handler, Bytes, Chunked, Connection, DiscardPacket,
-  File, Initial, ServerSentEvents, Streaming, Websocket,
+  File, Initial, ServerSentEvents, Websocket,
 }
 import mist/internal/http/handler as http_handler
 import mist/internal/http2
@@ -59,7 +60,7 @@ pub fn with_func(
         socket: conn.socket,
         transport: conn.transport,
         factory_name:,
-        h2_sender: option.None,
+        h2_sender: None,
       )
 
     let result = case msg, state {
@@ -67,46 +68,32 @@ pub fn with_func(
         Error(Error("Attempted to send HTTP/2 response without upgrade"))
       }
       User(Send(id, resp)), Http2(state) -> {
-        case resp.body {
-          ServerSentEvents -> Ok(Http2(state))
-          _ -> {
-            case resp.body {
-              Bytes(bytes) -> {
-                resp
-                |> response.set_body(bytes)
-                |> http2.send_bytes_tree(
-                  conn,
-                  state.send_hpack_context,
-                  id,
-                  state.settings,
-                )
-              }
-              Streaming(stream) -> {
-                resp
-                |> response.set_body(stream)
-                |> http2.send_streaming(
-                  conn,
-                  state.send_hpack_context,
-                  id,
-                  state.settings,
-                )
-              }
-              File(..) -> Error("File sending unsupported over HTTP/2")
-              Websocket -> Error("WebSocket unsupported for HTTP/2")
-              Chunked -> Error("Chunked encoding not supported for HTTP/2")
-              ServerSentEvents -> Error("unreachable")
-            }
-            |> result.map(fn(context) {
-              Http2(
-                state
-                |> http2_handler.send_hpack_context(context)
-                |> http2_handler.remove_stream(id),
-              )
-            })
-            |> result.map_error(fn(err) {
-              logging.log(logging.Debug, "Error sending HTTP/2 data: " <> err)
-              Error(err)
-            })
+        let send_result = case resp.body {
+          ServerSentEvents | Chunked -> Ok(None)
+          Bytes(bytes) ->
+            resp
+            |> response.set_body(bytes)
+            |> http2.send_bytes_tree(
+              conn,
+              state.send_hpack_context,
+              id,
+              state.settings,
+            )
+            |> result.map(Some)
+          File(..) -> Error("File sending unsupported over HTTP/2")
+          Websocket -> Error("WebSocket unsupported for HTTP/2")
+        }
+        case send_result {
+          Ok(Some(context)) ->
+            Ok(Http2(
+              state
+              |> http2_handler.send_hpack_context(context)
+              |> http2_handler.remove_stream(id),
+            ))
+          Ok(None) -> Ok(Http2(state))
+          Error(err) -> {
+            logging.log(logging.Debug, "Error sending HTTP/2 data: " <> err)
+            Error(Error(err))
           }
         }
       }
@@ -131,26 +118,30 @@ pub fn with_func(
         }
       }
       User(StreamData(id, data, end_stream)), Http2(state) -> {
-        case
-          http2.send_data(
-            conn,
-            bytes_tree.to_bit_array(data),
-            id,
-            end_stream,
-            state.settings.max_frame_size,
-          )
-        {
-          Ok(Nil) -> {
-            let new_state = case end_stream {
-              True -> http2_handler.remove_stream(state, id)
-              False -> state
+        case dict.get(state.streams, id) {
+          Error(Nil) -> Ok(Http2(state))
+          Ok(_) ->
+            case
+              http2.send_data(
+                conn,
+                bytes_tree.to_bit_array(data),
+                id,
+                end_stream,
+                state.settings.max_frame_size,
+              )
+            {
+              Ok(Nil) -> {
+                let new_state = case end_stream {
+                  True -> http2_handler.remove_stream(state, id)
+                  False -> state
+                }
+                Ok(Http2(new_state))
+              }
+              Error(err) -> {
+                logging.log(logging.Debug, "Error sending HTTP/2 data: " <> err)
+                Error(Error(err))
+              }
             }
-            Ok(Http2(new_state))
-          }
-          Error(err) -> {
-            logging.log(logging.Debug, "Error sending HTTP/2 data: " <> err)
-            Error(Error(err))
-          }
         }
       }
       User(_), Http1(..) -> {

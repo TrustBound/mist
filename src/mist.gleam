@@ -16,7 +16,6 @@ import gleam/otp/supervision.{type ChildSpecification}
 import gleam/result
 import gleam/string
 import gleam/string_tree.{type StringTree}
-import gleam/yielder.{type Yielder}
 import glisten
 import glisten/transport
 import gramps/websocket.{BinaryFrame, Data, TextFrame} as gramps_websocket
@@ -29,8 +28,7 @@ import mist/internal/http.{
   type Connection as InternalConnection, type H2StreamSender,
   type ResponseData as InternalResponseData, Bytes as InternalBytes,
   Chunked as InternalChunked, File as InternalFile,
-  ServerSentEvents as InternalServerSentEvents, Streaming as InternalStreaming,
-  Websocket as InternalWebsocket,
+  ServerSentEvents as InternalServerSentEvents, Websocket as InternalWebsocket,
 }
 import mist/internal/next
 import mist/internal/websocket.{
@@ -160,10 +158,6 @@ pub type ResponseData {
   Websocket
   Bytes(BytesTree)
   Chunked
-  /// Stream response body from a yielder. Over HTTP/1.1, this uses chunked
-  /// transfer encoding to send each element incrementally. Over HTTP/2, the
-  /// yielder is buffered into a single response body.
-  Streaming(Yielder(BytesTree))
   /// See `mist.send_file` to use this response type.
   File(descriptor: file.FileDescriptor, offset: Int, length: Int)
   ServerSentEvents
@@ -524,7 +518,6 @@ fn convert_body_types(
     Bytes(data) -> InternalBytes(data)
     File(descriptor, offset, length) -> InternalFile(descriptor, offset, length)
     Chunked -> InternalChunked
-    Streaming(stream) -> InternalStreaming(stream)
     ServerSentEvents -> InternalServerSentEvents
   }
   response.set_body(resp, new_body)
@@ -879,14 +872,14 @@ fn h2_server_sent_events(
   loop: fn(state, message, SSEConnection) -> actor.Next(state, message),
   h2_sender: H2StreamSender,
 ) -> Response(ResponseData) {
-  let headers =
+  let resp =
     resp
     |> response.set_header("content-type", "text/event-stream")
     |> response.set_header("cache-control", "no-cache")
-    |> fn(r) { r.headers }
-    |> list.filter(fn(h) { h.0 != "connection" })
+  let headers =
+    list.filter(resp.headers, fn(header) { header.0 != "connection" })
 
-  http.h2_send_headers(h2_sender, 200, headers)
+  h2_sender.send_headers(200, headers)
 
   let start = fn() {
     actor.new_with_initialiser(1000, fn(subj) {
@@ -916,7 +909,7 @@ fn h2_server_sent_events(
             process.new_selector()
             |> process.select_specific_monitor(monitor, fn(_down) { Nil })
           process.selector_receive_forever(selector)
-          http.h2_send_data(h2_sender, bytes_tree.new(), True)
+          h2_sender.send_data(bytes_tree.new(), True)
         })
       response.new(200) |> response.set_body(ServerSentEvents)
     }
@@ -962,12 +955,12 @@ fn build_sse_message(event: SSEEvent) -> BytesTree {
 pub fn send_event(conn: SSEConnection, event: SSEEvent) -> Result(Nil, Nil) {
   let message = build_sse_message(event)
   case conn {
-    SSEConnection(conn) ->
-      transport.send(conn.transport, conn.socket, message)
+    SSEConnection(inner) ->
+      transport.send(inner.transport, inner.socket, message)
       |> result.replace(Nil)
       |> result.replace_error(Nil)
     H2SSE(sender) -> {
-      http.h2_send_data(sender, message, False)
+      sender.send_data(message, False)
       Ok(Nil)
     }
   }
@@ -984,6 +977,18 @@ pub fn chunked(
   response response: Response(discard),
   init init: fn(Subject(message)) -> state,
   loop loop: fn(state, message, Connection) -> ChunkNext(state),
+) -> Response(ResponseData) {
+  case req.body.h2_sender {
+    Some(h2_sender) -> h2_chunked(req, response, init, loop, h2_sender)
+    None -> h1_chunked(req, response, init, loop)
+  }
+}
+
+fn h1_chunked(
+  req: Request(Connection),
+  response: Response(discard),
+  init: fn(Subject(message)) -> state,
+  loop: fn(state, message, Connection) -> ChunkNext(state),
 ) -> Response(ResponseData) {
   let start = fn() {
     actor.new_with_initialiser(1000, fn(subj) {
@@ -1042,18 +1047,89 @@ pub fn chunked(
   }
 }
 
-pub fn send_chunk(connection: Connection, data: BitArray) -> Result(Nil, Nil) {
-  let size = bit_array.byte_size(data)
-  let encoded =
-    size
-    |> int_to_hex
-    |> bytes_tree.from_string
-    |> bytes_tree.append_string("\r\n")
-    |> bytes_tree.append(data)
-    |> bytes_tree.append_string("\r\n")
+fn h2_chunked(
+  req: Request(Connection),
+  resp: Response(discard),
+  init: fn(Subject(message)) -> state,
+  loop: fn(state, message, Connection) -> ChunkNext(state),
+  h2_sender: H2StreamSender,
+) -> Response(ResponseData) {
+  let headers =
+    resp.headers
+    |> list.filter(fn(header) {
+      header.0 != "transfer-encoding" && header.0 != "connection"
+    })
 
-  transport.send(connection.transport, connection.socket, encoded)
-  |> result.replace_error(Nil)
+  h2_sender.send_headers(resp.status, headers)
+
+  let start = fn() {
+    actor.new_with_initialiser(1000, fn(subj) {
+      init(subj)
+      |> actor.initialised
+      |> actor.returning(process.self())
+      |> actor.selecting(process.new_selector() |> process.select(subj))
+      |> Ok
+    })
+    |> actor.on_message(fn(state, message) {
+      case loop(state, message, req.body) {
+        ChunkContinue(state) -> actor.continue(state)
+        ChunkStop -> {
+          h2_sender.send_data(bytes_tree.new(), True)
+          actor.stop()
+        }
+        ChunkAbort(reason) -> actor.stop_abnormal(reason)
+      }
+    })
+    |> actor.start
+    |> result.map(fn(started) {
+      let pid = started.data
+      actor.Started(pid, pid)
+    })
+  }
+
+  let factory_supervisor = factory.get_by_name(req.body.factory_name)
+  case factory.start_child(factory_supervisor, start) {
+    Ok(started) -> {
+      let chunk_pid = started.data
+      let _monitor_pid =
+        process.spawn_unlinked(fn() {
+          let monitor = process.monitor(chunk_pid)
+          let selector =
+            process.new_selector()
+            |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+          process.selector_receive_forever(selector)
+          h2_sender.send_data(bytes_tree.new(), True)
+        })
+      response.new(200) |> response.set_body(Chunked)
+    }
+    Error(_start_error) -> {
+      logging.log(logging.Error, "Failed to start chunked response process")
+      response.new(400)
+      |> response.set_body(Bytes(bytes_tree.new()))
+    }
+  }
+}
+
+pub fn send_chunk(connection: Connection, data: BitArray) -> Result(Nil, Nil) {
+  case connection.h2_sender {
+    Some(sender) -> {
+      sender.send_data(bytes_tree.from_bit_array(data), False)
+      Ok(Nil)
+    }
+    None -> {
+      let size = bit_array.byte_size(data)
+      let encoded =
+        size
+        |> http.int_to_hex
+        |> bytes_tree.from_string
+        |> bytes_tree.append_string("\r\n")
+        |> bytes_tree.append(data)
+        |> bytes_tree.append_string("\r\n")
+
+      transport.send(connection.transport, connection.socket, encoded)
+      |> result.replace_error(Nil)
+    }
+  }
 }
 
 pub fn chunk_continue(state: state) -> ChunkNext(state) {
@@ -1066,12 +1142,4 @@ pub fn chunk_stop() -> ChunkNext(state) {
 
 pub fn chunk_stop_abnormal(reason: String) -> ChunkNext(state) {
   ChunkAbort(reason)
-}
-
-/// Creates a standard HTTP handler service to pass to `mist.serve`
-@external(erlang, "erlang", "integer_to_list")
-fn integer_to_list(int int: Int, base base: Int) -> String
-
-fn int_to_hex(int: Int) -> String {
-  integer_to_list(int, 16)
 }
