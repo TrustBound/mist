@@ -108,7 +108,6 @@ fn convert_body_types(
     mist.File(descriptor, offset, length) ->
       mhttp.File(descriptor, offset, length)
     mist.Chunked -> mhttp.Chunked
-    mist.Streaming(stream) -> mhttp.Streaming(stream)
     mist.ServerSentEvents -> mhttp.ServerSentEvents
   }
   response.set_body(resp, new_body)

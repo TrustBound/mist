@@ -14,9 +14,8 @@ pub fn main() {
       |> response.set_body(mist.Bytes(bytes_tree.new()))
     }
     |> mist.new()
-    // |> mist.bind("0.0.0.0")
     |> mist.with_ipv6()
-    |> mist.with_ssl(certfile: "localhost.crt", keyfile: "localhost.key")
+    |> mist.with_tls(certfile: "localhost.crt", keyfile: "localhost.key")
     |> mist.start
 
   process.sleep_forever()

@@ -6,7 +6,6 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
-import gleam/yielder.{type Yielder}
 import glisten/socket.{type Socket, type SocketReason}
 import glisten/transport.{type Transport}
 import logging
@@ -261,47 +260,6 @@ pub fn send_bytes_tree(
         |> result.replace(context)
       })
     }
-  }
-}
-
-pub fn send_streaming(
-  resp: Response(Yielder(BytesTree)),
-  conn: Connection,
-  context: HpackContext,
-  id: StreamIdentifier(Frame),
-  settings: Http2Settings,
-) -> Result(HpackContext, String) {
-  let headers = [#(":status", int.to_string(resp.status)), ..resp.headers]
-  use context <- result.try(send_headers(
-    context,
-    conn,
-    headers,
-    False,
-    id,
-    settings.max_frame_size,
-  ))
-  use _nil <- result.try(send_yielder(
-    conn,
-    resp.body,
-    id,
-    settings.max_frame_size,
-  ))
-  Ok(context)
-}
-
-fn send_yielder(
-  conn: Connection,
-  stream: Yielder(BytesTree),
-  id: StreamIdentifier(Frame),
-  max_frame_size: Int,
-) -> Result(Nil, String) {
-  case yielder.step(stream) {
-    yielder.Next(chunk, rest) -> {
-      let data = bytes_tree.to_bit_array(chunk)
-      use _nil <- result.try(send_data(conn, data, id, False, max_frame_size))
-      send_yielder(conn, rest, id, max_frame_size)
-    }
-    yielder.Done -> send_data(conn, <<>>, id, True, max_frame_size)
   }
 }
 

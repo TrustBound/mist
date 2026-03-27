@@ -7,7 +7,6 @@ import gleam/int
 import gleam/list
 import gleam/otp/actor
 import gleam/string_tree
-import gleam/yielder
 import mist
 import mist/internal/http.{type Connection}
 import scaffold
@@ -371,21 +370,37 @@ fn drain_until_end_headers(socket: H2cSocket) -> Nil {
   }
 }
 
-fn streaming_handler(
-  _req: Request(Connection),
-) -> response.Response(mist.ResponseData) {
-  let stream =
-    yielder.from_list([
-      bytes_tree.from_string("chunk1"),
-      bytes_tree.from_string("chunk2"),
-      bytes_tree.from_string("chunk3"),
-    ])
-  response.new(200)
-  |> response.set_body(mist.Streaming(stream))
+type ChunkMessage {
+  SendChunks
 }
 
-pub fn it_sends_streaming_data_incrementally_test() {
-  use <- scaffold.open_server(19_011, streaming_handler)
+fn chunked_handler(
+  req: Request(Connection),
+) -> response.Response(mist.ResponseData) {
+  mist.chunked(
+    request: req,
+    response: response.new(200),
+    init: fn(subj) {
+      process.send(subj, SendChunks)
+      Nil
+    },
+    loop: fn(_state, _msg, conn) {
+      let chunks = [
+        bit_array.from_string("chunk1"),
+        bit_array.from_string("chunk2"),
+        bit_array.from_string("chunk3"),
+      ]
+      list.each(chunks, fn(chunk) {
+        let assert Ok(_nil) = mist.send_chunk(conn, chunk)
+        Nil
+      })
+      mist.chunk_stop()
+    },
+  )
+}
+
+pub fn it_sends_chunked_data_over_h2_test() {
+  use <- scaffold.open_server(19_011, chunked_handler)
 
   let socket = h2c_connect(19_011)
 

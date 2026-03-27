@@ -17,7 +17,6 @@ import gleam/otp/factory_supervisor as factory
 import gleam/pair
 import gleam/result
 import gleam/string
-import gleam/yielder.{type Yielder}
 import glisten.{type Socket}
 import glisten/transport.{type Transport}
 import gramps/websocket
@@ -30,39 +29,15 @@ pub type ResponseData {
   Websocket
   Bytes(BytesTree)
   Chunked
-  Streaming(Yielder(BytesTree))
   File(descriptor: file.FileDescriptor, offset: Int, length: Int)
   ServerSentEvents
 }
 
-pub opaque type H2StreamSender {
+pub type H2StreamSender {
   H2StreamSender(
     send_headers: fn(Int, List(#(String, String))) -> Nil,
     send_data: fn(BytesTree, Bool) -> Nil,
   )
-}
-
-pub fn new_h2_stream_sender(
-  send_headers send_headers: fn(Int, List(#(String, String))) -> Nil,
-  send_data send_data: fn(BytesTree, Bool) -> Nil,
-) -> H2StreamSender {
-  H2StreamSender(send_headers:, send_data:)
-}
-
-pub fn h2_send_headers(
-  sender: H2StreamSender,
-  status: Int,
-  headers: List(#(String, String)),
-) -> Nil {
-  sender.send_headers(status, headers)
-}
-
-pub fn h2_send_data(
-  sender: H2StreamSender,
-  data: BytesTree,
-  end_stream: Bool,
-) -> Nil {
-  sender.send_data(data, end_stream)
 }
 
 pub type Connection {
@@ -706,6 +681,13 @@ fn string_to_int(string string: Charlist, base base: Int) -> Result(Int, Nil)
 
 @external(erlang, "binary", "split")
 fn binary_split(source: BitArray, pattern: BitArray) -> List(BitArray)
+
+@external(erlang, "erlang", "integer_to_list")
+fn integer_to_list(int int: Int, base base: Int) -> String
+
+pub fn int_to_hex(int: Int) -> String {
+  integer_to_list(int, 16)
+}
 
 @external(erlang, "mist_ffi", "get_path_and_query")
 fn get_path_and_query(

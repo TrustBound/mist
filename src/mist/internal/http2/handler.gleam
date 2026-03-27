@@ -218,7 +218,7 @@ fn handle_frame(
         }
       }
     }
-    None, frame.Header(Complete(data), end_stream, identifier, _priority) -> {
+    None, frame.Header(Complete(data), _end_stream, identifier, _priority) -> {
       let conn = Connection(..conn, body: Initial(<<>>))
       let assert Ok(#(headers, context)) =
         http2.hpack_decode(state.receive_hpack_context, data)
@@ -230,15 +230,7 @@ fn handle_frame(
         |> option.from_result
 
       let assert Ok(new_stream) =
-        stream.new(
-          identifier,
-          handler,
-          headers,
-          conn,
-          state.self,
-          // fn(resp) { process.send(state.self, Send(identifier, resp)) },
-          end_stream,
-        )
+        stream.new(identifier, handler, headers, conn, state.self)
       process.send(new_stream.data, Ready)
 
       let stream_state =
