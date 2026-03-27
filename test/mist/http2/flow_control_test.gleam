@@ -31,5 +31,6 @@ pub fn it_should_update_send_window_test() {
 
 pub fn it_should_reject_send_window_overflow_test() {
   let max_window = int.bitwise_shift_left(1, 31) - 1
-  assert flow_control.update_send_window(max_window, 1) == Error("Invalid update increment")
+  assert flow_control.update_send_window(max_window, 1)
+    == Error("Invalid update increment")
 }

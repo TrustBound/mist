@@ -29,8 +29,8 @@ import mist/internal/http.{
   type Connection as InternalConnection, type H2StreamSender,
   type ResponseData as InternalResponseData, Bytes as InternalBytes,
   Chunked as InternalChunked, File as InternalFile,
-  ServerSentEvents as InternalServerSentEvents,
-  Streaming as InternalStreaming, Websocket as InternalWebsocket,
+  ServerSentEvents as InternalServerSentEvents, Streaming as InternalStreaming,
+  Websocket as InternalWebsocket,
 }
 import mist/internal/next
 import mist/internal/websocket.{
@@ -804,8 +804,7 @@ pub fn server_sent_events(
   loop loop: fn(state, message, SSEConnection) -> actor.Next(state, message),
 ) -> Response(ResponseData) {
   case req.body.h2_sender {
-    Some(h2_sender) ->
-      h2_server_sent_events(req, resp, init, loop, h2_sender)
+    Some(h2_sender) -> h2_server_sent_events(req, resp, init, loop, h2_sender)
     None -> h1_server_sent_events(req, resp, init, loop)
   }
 }
