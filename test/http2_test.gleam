@@ -659,6 +659,180 @@ pub fn it_does_not_leak_stream_actors_test() {
   h2c_close(socket)
 }
 
+// Integration test: uses mist.start() (production path) instead of scaffold
+pub fn it_handles_sse_over_h2c_production_path_test() {
+  let handler = fn(req: Request(Connection)) {
+    case request.path_segments(req) {
+      ["sse"] -> sse_handler(req)
+      _ -> simple_handler(req)
+    }
+  }
+
+  let assert Ok(_server) =
+    mist.new(handler)
+    |> mist.port(19_020)
+    |> mist.start
+
+  process.sleep(50)
+
+  let socket = h2c_connect(19_020)
+
+  // First: verify simple requests work
+  h2c_send_headers(
+    socket,
+    1,
+    [
+      #(":method", "GET"),
+      #(":path", "/hello"),
+      #(":scheme", "http"),
+      #(":authority", "localhost"),
+    ],
+    True,
+  )
+  let _headers_flags = drain_until_headers_on_stream(socket, 1, 5000)
+  let #(_data_flags, data_payload) = drain_until_data_on_stream(socket, 1, 5000)
+  assert data_payload == bit_array.from_string("hello")
+
+  // Now: test SSE on the same connection
+  h2c_send_headers(
+    socket,
+    3,
+    [
+      #(":method", "GET"),
+      #(":path", "/sse"),
+      #(":scheme", "http"),
+      #(":authority", "localhost"),
+    ],
+    True,
+  )
+  let _sse_headers_flags = drain_until_headers_on_stream(socket, 3, 5000)
+  let #(_sse_data_flags, sse_data_payload) =
+    drain_until_data_on_stream(socket, 3, 5000)
+  assert sse_data_payload == bit_array.from_string("data: hello\n\n")
+
+  // Verify connection is still alive after SSE
+  let ping_data = <<20, 20, 20, 20, 20, 20, 20, 20>>
+  h2c_send_ping(socket, ping_data)
+  drain_until_ping_ack(socket, ping_data)
+
+  // And verify we can still serve requests after SSE
+  h2c_send_headers(
+    socket,
+    5,
+    [
+      #(":method", "GET"),
+      #(":path", "/hello"),
+      #(":scheme", "http"),
+      #(":authority", "localhost"),
+    ],
+    True,
+  )
+  let _headers5_flags = drain_until_headers_on_stream(socket, 5, 5000)
+  let #(_data5_flags, data5_payload) =
+    drain_until_data_on_stream(socket, 5, 5000)
+  assert data5_payload == bit_array.from_string("hello")
+
+  h2c_close(socket)
+}
+
+// Stress test: multiple concurrent connections, each doing SSE + regular requests
+pub fn it_handles_sse_under_load_production_path_test() {
+  let handler = fn(req: Request(Connection)) {
+    case request.path_segments(req) {
+      ["sse"] -> sse_handler(req)
+      _ -> simple_handler(req)
+    }
+  }
+
+  let assert Ok(_server) =
+    mist.new(handler)
+    |> mist.port(19_021)
+    |> mist.start
+
+  process.sleep(50)
+
+  // Spawn 5 concurrent connections, each doing SSE + regular requests
+  let results =
+    list.map([1, 2, 3, 4, 5], fn(conn_id) {
+      process.spawn_unlinked(fn() {
+        let socket = h2c_connect(19_021)
+
+        // First: regular request
+        h2c_send_headers(
+          socket,
+          1,
+          [
+            #(":method", "GET"),
+            #(":path", "/hello"),
+            #(":scheme", "http"),
+            #(":authority", "localhost"),
+          ],
+          True,
+        )
+        let _hf = drain_until_headers_on_stream(socket, 1, 5000)
+        let #(_df, dp) = drain_until_data_on_stream(socket, 1, 5000)
+        assert dp == bit_array.from_string("hello")
+
+        // SSE request
+        h2c_send_headers(
+          socket,
+          3,
+          [
+            #(":method", "GET"),
+            #(":path", "/sse"),
+            #(":scheme", "http"),
+            #(":authority", "localhost"),
+          ],
+          True,
+        )
+        let _shf = drain_until_headers_on_stream(socket, 3, 5000)
+        let #(_sdf, sdp) = drain_until_data_on_stream(socket, 3, 5000)
+        assert sdp == bit_array.from_string("data: hello\n\n")
+
+        // Another regular request after SSE (tests connection survival)
+        h2c_send_headers(
+          socket,
+          5,
+          [
+            #(":method", "GET"),
+            #(":path", "/hello"),
+            #(":scheme", "http"),
+            #(":authority", "localhost"),
+          ],
+          True,
+        )
+        let _hf2 = drain_until_headers_on_stream(socket, 5, 5000)
+        let #(_df2, dp2) = drain_until_data_on_stream(socket, 5, 5000)
+        assert dp2 == bit_array.from_string("hello")
+
+        // Ping to verify connection
+        let ping_data = <<
+          { conn_id * 3 }:8,
+          { conn_id * 3 }:8,
+          { conn_id * 3 }:8,
+          { conn_id * 3 }:8,
+          { conn_id * 3 }:8,
+          { conn_id * 3 }:8,
+          { conn_id * 3 }:8,
+          { conn_id * 3 }:8,
+        >>
+        h2c_send_ping(socket, ping_data)
+        drain_until_ping_ack(socket, ping_data)
+
+        h2c_close(socket)
+      })
+    })
+
+  // Wait for all connections to finish (monitor each)
+  list.each(results, fn(pid) {
+    let monitor = process.monitor(pid)
+    let selector =
+      process.new_selector()
+      |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+    process.selector_receive(selector, 30_000)
+  })
+}
+
 fn collect_data_frames_on_stream(
   socket: H2cSocket,
   target_stream: Int,

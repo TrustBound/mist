@@ -8,13 +8,13 @@ import gleam/int
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/string
+import gleam/yielder
 import glisten/internal/handler.{Close, Internal}
 import glisten/socket.{type Socket, type SocketReason, Badarg}
 import glisten/transport.{type Transport}
 import logging
 import mist/internal/encoder
 import mist/internal/file
-import gleam/yielder
 import mist/internal/http.{
   type Connection, type Handler, type ResponseData, Bytes, Chunked, File,
   ServerSentEvents, Streaming, Websocket,
@@ -190,9 +190,11 @@ fn handle_streaming_body(
       http.version_to_string(version),
     )
 
-  use _nil <- result.try(
-    transport.send(conn.transport, conn.socket, header_payload),
-  )
+  use _nil <- result.try(transport.send(
+    conn.transport,
+    conn.socket,
+    header_payload,
+  ))
 
   yielder.each(stream, fn(chunk) {
     let size = bytes_tree.byte_size(chunk)
@@ -208,9 +210,11 @@ fn handle_streaming_body(
   })
 
   let final_chunk = bytes_tree.from_string("0\r\n\r\n")
-  use _nil <- result.try(
-    transport.send(conn.transport, conn.socket, final_chunk),
-  )
+  use _nil <- result.try(transport.send(
+    conn.transport,
+    conn.socket,
+    final_chunk,
+  ))
 
   Ok(response.set_body(resp, bytes_tree.new()))
 }

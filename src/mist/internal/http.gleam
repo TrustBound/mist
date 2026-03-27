@@ -1,6 +1,5 @@
 import gleam/bit_array
 import gleam/bytes_tree.{type BytesTree}
-import gleam/yielder.{type Yielder}
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
@@ -18,6 +17,7 @@ import gleam/otp/factory_supervisor as factory
 import gleam/pair
 import gleam/result
 import gleam/string
+import gleam/yielder.{type Yielder}
 import glisten.{type Socket}
 import glisten/transport.{type Transport}
 import gramps/websocket
