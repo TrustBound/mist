@@ -24,6 +24,9 @@
 - Handle `:authority` pseudo-header by setting the request host
 - Respect `max_frame_size` SETTINGS when sending HTTP/2 DATA frames
 - Clean up completed streams from connection state after response is sent
+- Close HTTP/1 connections in stages (half-close, drain, close) per RFC 9112
+  section 9.6, so a response sent with `connection: close` before the request
+  body was read (for example a 413) is not erased by a TCP reset
 
 # v6.0.3
 
