@@ -432,7 +432,10 @@ pub fn it_sends_chunked_data_over_h2_test() {
   h2c_close(socket)
 }
 
-fn collect_data_frames(socket: H2cSocket, acc: List(BitArray)) -> List(BitArray) {
+fn collect_data_frames(
+  socket: H2cSocket,
+  acc: List(BitArray),
+) -> List(BitArray) {
   let #(frame_type, flags, _stream_id, payload) = h2c_recv_frame(socket, 5000)
   case frame_type {
     0 -> {
@@ -454,7 +457,9 @@ type SSEMsg {
   StopAfterEvent
 }
 
-fn sse_handler(req: Request(Connection)) -> response.Response(mist.ResponseData) {
+fn sse_handler(
+  req: Request(Connection),
+) -> response.Response(mist.ResponseData) {
   mist.server_sent_events(
     request: req,
     initial_response: response.new(200),

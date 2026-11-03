@@ -355,7 +355,9 @@ fn parse_ping(
   payload: BitArray,
 ) -> Result(Frame, ConnectionError) {
   case length, <<flags:bits, payload:bits>> {
-    8, <<_unused:size(7), ack:size(1), data:bits-size(64)>> if identifier == 0 -> {
+    8, <<_unused:size(7), ack:size(1), data:bits-size(64)>>
+      if identifier == 0
+    -> {
       Ok(Ping(ack: ack == 1, data: data))
     }
     8, _ -> Error(ProtocolError)
@@ -630,7 +632,10 @@ fn get_settings(
   }
 }
 
-fn get_setting(identifier: Int, value: Int) -> Result(Setting, ConnectionError) {
+fn get_setting(
+  identifier: Int,
+  value: Int,
+) -> Result(Setting, ConnectionError) {
   case identifier {
     1 -> Ok(HeaderTableSize(value))
     2 ->
