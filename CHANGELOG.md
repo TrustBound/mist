@@ -1,5 +1,10 @@
 # Changelog
 
+# Unreleased
+
+- Read remaining request data before closing so the response is not lost to a
+  connection reset
+
 # v6.0.3
 
 - Continue handling frames after receiving `Ping`

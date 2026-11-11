@@ -89,7 +89,7 @@ fn log_and_error(
     |> encoder.to_bytes_tree(http.version_to_string(version))
     |> transport.send(transport, socket, _)
 
-  let _ = transport.close(transport, socket)
+  let _ = lingering_close(transport, socket)
   Error(error_string)
 }
 
@@ -102,7 +102,7 @@ fn close_or_set_timer(
   // probably listen to them
   case response.get_header(resp, "connection") {
     Ok("close") -> {
-      let _ = transport.close(conn.transport, conn.socket)
+      let _ = lingering_close(conn.transport, conn.socket)
       Error(Ok(Nil))
     }
     _ -> {
@@ -110,6 +110,34 @@ fn close_or_set_timer(
       let timer = process.send_after(sender, 10_000, Internal(Close))
       Ok(State(idle_timer: Some(timer)))
     }
+  }
+}
+
+type TimeUnit {
+  Millisecond
+}
+
+const linger_timeout = 5000
+
+// Closing a socket that still has unread data from the client resets the
+// connection, which can throw away the response before the client reads it
+fn lingering_close(
+  transport: Transport,
+  socket: Socket,
+) -> Result(Nil, SocketReason) {
+  let _ = transport.shutdown(transport, socket)
+  drain(transport, socket, monotonic_time(Millisecond) + linger_timeout)
+  transport.close(transport, socket)
+}
+
+fn drain(transport: Transport, socket: Socket, deadline: Int) -> Nil {
+  case deadline - monotonic_time(Millisecond) {
+    timeout if timeout > 0 ->
+      case transport.receive_timeout(transport, socket, 0, timeout) {
+        Ok(_data) -> drain(transport, socket, deadline)
+        Error(_reason) -> Nil
+      }
+    _expired -> Nil
   }
 }
 
@@ -195,3 +223,6 @@ fn handle_bytes_tree_body(
   |> transport.send(conn.transport, conn.socket, _)
   |> result.replace(resp)
 }
+
+@external(erlang, "erlang", "monotonic_time")
+fn monotonic_time(unit: TimeUnit) -> Int
