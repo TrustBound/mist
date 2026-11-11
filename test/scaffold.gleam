@@ -18,7 +18,7 @@ import gleam/string
 import gleam/uri
 import glisten
 import glisten/internal/handler as glisten_handler
-import glisten/socket.{type Socket, type SocketReason}
+import glisten/socket.{type Socket, type SocketReason, Closed}
 import glisten/socket/options
 import glisten/tcp
 import glisten/transport.{Tcp}
@@ -477,6 +477,10 @@ fn receive_response(
       window,
       True,
     )
+    frame.GoAway(..) -> {
+      let assert Error(Closed) = tcp.receive_timeout(socket, 0, 5000)
+      #(response.set_body(resp, frame.encode(received)), context, window, True)
+    }
     frame.Termination(identifier: reset, ..) if reset == identifier -> #(
       resp,
       context,

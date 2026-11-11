@@ -71,13 +71,16 @@ file_close(File) ->
   end.
 
 hpack_decode(Context, Bin) ->
-  case hpack:decode(Bin, Context) of
+  try hpack:decode(Bin, Context) of
     {ok, {Headers, NewContext}} ->
       {ok, {Headers, NewContext}};
     {error, compression_error} ->
       {error, {hpack_error, compression}};
     {error, {compression_error, {bad_header_packet, Binary}}} ->
       {error, {hpack_error, {bad_header_packet, Binary}}}
+  catch
+    error:_ ->
+      {error, {hpack_error, compression}}
   end.
 
 hpack_encode(Context, Headers) ->

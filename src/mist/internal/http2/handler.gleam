@@ -24,6 +24,7 @@ pub type State {
   State(
     fragment: Option(Frame),
     frame_buffer: Buffer,
+    last_stream_id: StreamIdentifier(Frame),
     pending_sends: List(PendingSend),
     receive_hpack_context: HpackContext,
     self: Subject(SendMessage),
@@ -152,6 +153,7 @@ pub fn upgrade(
   State(
     fragment: None,
     frame_buffer: buffer.new(data),
+    last_stream_id: frame.stream_identifier(0),
     pending_sends: [],
     receive_hpack_context: http2.hpack_new_context(
       initial_settings.header_table_size,
@@ -173,6 +175,7 @@ pub fn call(
   handler: Handler,
 ) -> Result(State, Result(Nil, String)) {
   case frame.decode(state.frame_buffer.data) {
+    Ok(#(frame.GoAway(..), _rest)) -> Error(Ok(Nil))
     Ok(#(frame, rest)) -> {
       let new_state = State(..state, frame_buffer: buffer.new(rest))
       case handle_frame(frame, new_state, conn, handler) {
@@ -181,13 +184,26 @@ pub fn call(
       }
     }
     Error(frame.NoError) -> Ok(state)
-    Error(_connection_error) -> {
-      // TODO:
-      //  - send GOAWAY with last good stream ID
-      //  - close the connection
-      Ok(state)
+    Error(error) -> {
+      case bit_array.byte_size(state.frame_buffer.data) < 9 {
+        True -> Ok(state)
+        False -> {
+          let _ = send_go_away(state, conn, error)
+          Error(Error("Received malformed HTTP/2 frame"))
+        }
+      }
     }
   }
+}
+
+fn send_go_away(
+  state: State,
+  conn: Connection,
+  error: frame.ConnectionError,
+) -> Result(Nil, String) {
+  frame.GoAway(data: <<>>, error: error, last_stream_id: state.last_stream_id)
+  |> http2.send_frame(conn.socket, conn.transport)
+  |> result.replace_error("Failed to send go away")
 }
 
 fn handle_frame(
@@ -273,8 +289,13 @@ fn handle_frame(
     }
     None, frame.Header(Complete(data), end_stream, identifier, _priority) -> {
       let conn = Connection(..conn, body: Initial(<<>>))
-      let assert Ok(#(headers, context)) =
+      let decoded =
         http2.hpack_decode(state.receive_hpack_context, data)
+        |> result.map_error(fn(_hpack_error) {
+          let _ = send_go_away(state, conn, frame.CompressionError)
+          "Failed to decode HTTP/2 headers"
+        })
+      use #(headers, context) <- result.try(decoded)
 
       let pending_content_length =
         headers
@@ -306,7 +327,14 @@ fn handle_frame(
           pending_content_length: pending_content_length,
         )
       let streams = dict.insert(state.streams, identifier, stream_state)
-      Ok(State(..state, receive_hpack_context: context, streams: streams))
+      Ok(
+        State(
+          ..state,
+          last_stream_id: identifier,
+          receive_hpack_context: context,
+          streams: streams,
+        ),
+      )
     }
     None, frame.Data(identifier: identifier, data: data, end_stream: end_stream)
     -> {
@@ -426,11 +454,6 @@ fn handle_frame(
           process.kill(pid)
         })
       Ok(State(..state, streams: dict.delete(state.streams, identifier)))
-    }
-    None, frame.GoAway(..) -> {
-      logging.log(logging.Debug, "byteeee~~")
-      // TODO:  Normal exit
-      Error("Going away...")
     }
     // TODO:  obviously fill these out
     _, frame -> {
