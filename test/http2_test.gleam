@@ -483,3 +483,26 @@ pub fn it_sends_server_sent_events_test() {
 
   bitstring_response_should_equal(after, expected)
 }
+
+pub fn it_sends_chunked_responses_test() {
+  let headers = [
+    #(":method", "POST"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+    #("content-length", "1000"),
+  ]
+  let body = <<string.repeat("a", 1000):utf8>>
+
+  use <- scaffold.open_server(8888, scaffold.chunked_echo_server(100))
+
+  let assert [actual, after] =
+    scaffold.http2_requests([#(<<>>, headers, body), #(<<>>, headers, body)])
+
+  let expected =
+    response.new(200)
+    |> response.set_body(bytes_tree.from_bit_array(body))
+
+  bitstring_response_should_equal(actual, expected)
+  bitstring_response_should_equal(after, expected)
+}

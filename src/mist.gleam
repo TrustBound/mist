@@ -965,6 +965,19 @@ pub fn chunked(
   init init: fn(Subject(message)) -> state,
   loop loop: fn(state, message, Connection) -> ChunkNext(state),
 ) -> Response(ResponseData) {
+  case req.body.body {
+    http.Initial(_data) -> http1_chunked(req, response, init, loop)
+    http.Stream(send_headers: send_headers, ..) ->
+      http2_chunked(req, response, init, loop, send_headers)
+  }
+}
+
+fn http1_chunked(
+  req: Request(Connection),
+  response: Response(discard),
+  init: fn(Subject(message)) -> state,
+  loop: fn(state, message, Connection) -> ChunkNext(state),
+) -> Response(ResponseData) {
   let start = fn() {
     actor.new_with_initialiser(1000, fn(subj) {
       init(subj)
@@ -1022,6 +1035,48 @@ pub fn chunked(
   }
 }
 
+fn http2_chunked(
+  req: Request(Connection),
+  resp: Response(discard),
+  init: fn(Subject(message)) -> state,
+  loop: fn(state, message, Connection) -> ChunkNext(state),
+  send_headers: fn(Int, List(gleam_http.Header)) -> Nil,
+) -> Response(ResponseData) {
+  send_headers(resp.status, resp.headers)
+
+  let start = fn() {
+    actor.new_with_initialiser(1000, fn(subj) {
+      init(subj)
+      |> actor.initialised
+      |> actor.returning(process.self())
+      |> actor.selecting(process.new_selector() |> process.select(subj))
+      |> Ok
+    })
+    |> actor.on_message(fn(state, message) {
+      case loop(state, message, req.body) {
+        ChunkContinue(state) -> actor.continue(state)
+        ChunkStop -> actor.stop()
+        ChunkAbort(reason) -> actor.stop_abnormal(reason)
+      }
+    })
+    |> actor.start
+    |> result.map(fn(started) { actor.Started(started.data, started.data) })
+  }
+  let factory_supervisor = factory.get_by_name(req.body.factory_name)
+  case factory.start_child(factory_supervisor, start) {
+    Ok(started) -> {
+      let monitor = process.monitor(started.data)
+      process.new_selector()
+      |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+      |> process.selector_receive_forever
+    }
+    Error(_start_error) ->
+      logging.log(logging.Error, "Failed to start chunked response process")
+  }
+
+  response.new(200) |> response.set_body(Chunked)
+}
+
 pub fn send_chunk(connection: Connection, data: BitArray) -> Result(Nil, Nil) {
   let size = bit_array.byte_size(data)
   let encoded =
@@ -1032,8 +1087,12 @@ pub fn send_chunk(connection: Connection, data: BitArray) -> Result(Nil, Nil) {
     |> bytes_tree.append(data)
     |> bytes_tree.append_string("\r\n")
 
-  transport.send(connection.transport, connection.socket, encoded)
-  |> result.replace_error(Nil)
+  case connection.body {
+    http.Initial(_data) ->
+      transport.send(connection.transport, connection.socket, encoded)
+      |> result.replace_error(Nil)
+    http.Stream(send_data: send_data, ..) -> send_data(data)
+  }
 }
 
 pub fn chunk_continue(state: state) -> ChunkNext(state) {

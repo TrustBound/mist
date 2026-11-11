@@ -89,7 +89,7 @@ pub fn with_func(
           File(..) -> Error("File sending unsupported over HTTP/2")
           // TODO:  properly error in some fashion for these
           Websocket -> Error("WebSocket unsupported for HTTP/2")
-          Chunked -> Error("Chunked encoding not supported for HTTP/2")
+          Chunked -> http2_handler.send_data(state, conn, id, <<>>, True)
           ServerSentEvents ->
             http2_handler.send_data(state, conn, id, <<>>, True)
         }
