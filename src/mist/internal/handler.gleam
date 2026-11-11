@@ -78,7 +78,10 @@ pub fn with_func(
           ServerSentEvents -> Error("Server-Sent Events unsupported for HTTP/2")
         }
         |> result.map(fn(context) {
-          Http2(http2_handler.send_hpack_context(state, context))
+          state
+          |> http2_handler.send_hpack_context(context)
+          |> http2_handler.close_stream(id)
+          |> Http2
         })
         |> result.map_error(fn(err) {
           logging.log(logging.Debug, "Error sending HTTP/2 data: " <> err)

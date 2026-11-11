@@ -307,24 +307,29 @@ pub fn http2_request_after(
   data: BitArray,
   headers: List(#(String, String)),
 ) -> Response(BitArray) {
+  let assert [resp] = http2_requests([#(data, headers, <<>>)])
+  resp
+}
+
+pub fn http2_request_with_body(
+  headers: List(#(String, String)),
+  body: BitArray,
+) -> Response(BitArray) {
+  let assert [resp] = http2_requests([#(<<>>, headers, body)])
+  resp
+}
+
+pub fn http2_requests(
+  requests: List(#(BitArray, List(#(String, String)), BitArray)),
+) -> List(Response(BitArray)) {
   let assert Ok(socket) =
     [options.Mode(options.Binary), options.ActiveMode(options.Passive)]
     |> options.to_erl_options
     |> gen_tcp_connect(atom.create("localhost"), 8888, _)
 
   let initial_settings = http2.default_settings()
-  let assert Ok(#(headers, _context)) =
-    http2.hpack_new_context(initial_settings.header_table_size)
-    |> http2.hpack_encode(headers)
-
+  let context = http2.hpack_new_context(initial_settings.header_table_size)
   let settings_frame = frame.Settings(ack: False, settings: [])
-  let header_frame =
-    frame.Header(
-      data: frame.Complete(headers),
-      end_stream: True,
-      identifier: frame.stream_identifier(1),
-      priority: option.None,
-    )
 
   let assert Ok(_nil) =
     bytes_tree.from_string("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
@@ -332,13 +337,66 @@ pub fn http2_request_after(
   let assert Ok(_nil) = http2.send_frame(settings_frame, socket, Tcp)
   let assert #(frame.Settings(..), rest) = receive_frame(socket, <<>>)
   let assert Ok(_nil) = http2.send_frame(frame.settings_ack(), socket, Tcp)
-  let assert Ok(_nil) = tcp.send(socket, bytes_tree.from_bit_array(data))
-  let assert Ok(_nil) = http2.send_frame(header_frame, socket, Tcp)
-  let resp =
-    receive_response(socket, rest, Response(status: 0, headers: [], body: <<>>))
+  let responses = send_requests(socket, requests, 1, context, context, rest)
   let assert Ok(_nil) = tcp.close(socket)
 
-  resp
+  responses
+}
+
+fn send_requests(
+  socket: Socket,
+  requests: List(#(BitArray, List(#(String, String)), BitArray)),
+  identifier: Int,
+  encode_context: http2.HpackContext,
+  decode_context: http2.HpackContext,
+  rest: BitArray,
+) -> List(Response(BitArray)) {
+  case requests {
+    [] -> []
+    [#(data, headers, body), ..requests] -> {
+      let assert Ok(#(headers, encode_context)) =
+        http2.hpack_encode(encode_context, headers)
+      let header_frame =
+        frame.Header(
+          data: frame.Complete(headers),
+          end_stream: body == <<>>,
+          identifier: frame.stream_identifier(identifier),
+          priority: option.None,
+        )
+
+      let assert Ok(_nil) = tcp.send(socket, bytes_tree.from_bit_array(data))
+      let assert Ok(_nil) = http2.send_frame(header_frame, socket, Tcp)
+      let assert Ok(_nil) = case body {
+        <<>> -> Ok(Nil)
+        _ ->
+          frame.Data(
+            data: body,
+            end_stream: True,
+            identifier: frame.stream_identifier(identifier),
+          )
+          |> http2.send_frame(socket, Tcp)
+      }
+      let #(resp, decode_context, rest) =
+        receive_response(
+          socket,
+          rest,
+          decode_context,
+          Response(status: 0, headers: [], body: <<>>),
+        )
+
+      [
+        resp,
+        ..send_requests(
+          socket,
+          requests,
+          identifier + 2,
+          encode_context,
+          decode_context,
+          rest,
+        )
+      ]
+    }
+  }
 }
 
 fn receive_frame(socket: Socket, data: BitArray) -> #(Frame, BitArray) {
@@ -354,30 +412,33 @@ fn receive_frame(socket: Socket, data: BitArray) -> #(Frame, BitArray) {
 fn receive_response(
   socket: Socket,
   data: BitArray,
+  context: http2.HpackContext,
   resp: Response(BitArray),
-) -> Response(BitArray) {
+) -> #(Response(BitArray), http2.HpackContext, BitArray) {
   let #(received, rest) = receive_frame(socket, data)
-  let #(resp, end_stream) = case received {
+  let #(resp, context, end_stream) = case received {
     frame.Header(data: frame.Complete(data), end_stream: end_stream, ..) -> {
-      let initial_settings = http2.default_settings()
-      let assert Ok(#(headers, _context)) =
-        http2.hpack_new_context(initial_settings.header_table_size)
-        |> http2.hpack_decode(data)
+      let assert Ok(#(headers, context)) = http2.hpack_decode(context, data)
       let assert Ok(#(status, headers)) =
         headers
         |> list.key_pop(":status")
       let assert Ok(status) = int.parse(status)
-      #(Response(status: status, headers: headers, body: <<>>), end_stream)
+      #(
+        Response(status: status, headers: headers, body: <<>>),
+        context,
+        end_stream,
+      )
     }
     frame.Data(data: data, end_stream: end_stream, ..) -> #(
       response.set_body(resp, <<resp.body:bits, data:bits>>),
+      context,
       end_stream,
     )
-    _frame -> #(resp, False)
+    _frame -> #(resp, context, False)
   }
   case end_stream {
-    True -> resp
-    False -> receive_response(socket, rest, resp)
+    True -> #(resp, context, rest)
+    False -> receive_response(socket, rest, context, resp)
   }
 }
 

@@ -21,7 +21,6 @@ import mist/internal/http2/frame.{type Frame, type StreamIdentifier}
 pub type Message {
   Ready
   Data(bits: BitArray, end: Bool)
-  Done
 }
 
 pub type SendMessage {
@@ -47,13 +46,7 @@ pub type State {
 }
 
 pub type InternalState {
-  InternalState(
-    data_selector: Selector(Message),
-    data_subject: Subject(Message),
-    end: Bool,
-    pending_response: Option(Response(ResponseData)),
-    to_remove: BitArray,
-  )
+  InternalState(data_selector: Selector(Message))
 }
 
 pub fn new(
@@ -62,21 +55,20 @@ pub fn new(
   headers: List(Header),
   connection: Connection,
   sender: Subject(SendMessage),
-  end: Bool,
 ) -> Result(actor.Started(Subject(Message)), actor.StartError) {
   actor.new_with_initialiser(1000, fn(subject) {
     let data_selector =
       process.new_selector()
       |> process.select(subject)
-    InternalState(data_selector, subject, end, None, <<>>)
+    InternalState(data_selector)
     |> actor.initialised
     |> actor.selecting(data_selector)
     |> actor.returning(subject)
     |> Ok
   })
   |> actor.on_message(fn(state, msg) {
-    case msg, state.end {
-      Ready, _ -> {
+    case msg {
+      Ready -> {
         let content_length =
           headers
           |> list.key_find("content-length")
@@ -111,8 +103,8 @@ pub fn new(
                 |> response.set_body(Bytes(bytes_tree.new()))
               }
             }
-            process.send(state.data_subject, Done)
-            actor.continue(InternalState(..state, pending_response: Some(resp)))
+            process.send(sender, Send(identifier, resp))
+            actor.stop()
           }
           Error(err) ->
             actor.stop_abnormal(
@@ -120,29 +112,7 @@ pub fn new(
             )
         }
       }
-      Done, True -> {
-        let assert Some(resp) = state.pending_response
-        process.send(sender, Send(identifier, resp))
-        actor.continue(state)
-      }
-      Data(bits: bits, end: True), _ -> {
-        process.send(state.data_subject, Done)
-        actor.continue(
-          InternalState(..state, end: True, to_remove: <<
-            state.to_remove:bits,
-            bits:bits,
-          >>),
-        )
-      }
-      Data(bits: bits, ..), _ -> {
-        actor.continue(
-          InternalState(..state, to_remove: <<state.to_remove:bits, bits:bits>>),
-        )
-      }
-      _msg, _ -> {
-        // TODO:  probably just discard this?
-        actor.continue(state)
-      }
+      _msg -> actor.continue(state)
     }
   })
   |> actor.start

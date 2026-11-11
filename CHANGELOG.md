@@ -7,6 +7,7 @@
 - Apply HTTP/2 pseudo-headers to the request
 - Respond with HTTP 400 on missing `host` header over HTTP/2
 - Fix encoding and decoding of some HTTP/2 frames and ignore unknown frames
+- Fix HTTP/2 responses to requests with a body and stop stream processes
 
 # v6.0.3
 

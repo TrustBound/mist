@@ -43,6 +43,18 @@ pub fn receive_hpack_context(state: State, context: HpackContext) -> State {
   State(..state, receive_hpack_context: context)
 }
 
+pub fn close_stream(state: State, id: StreamIdentifier(Frame)) -> State {
+  case dict.get(state.streams, id) {
+    Ok(stream.State(state: stream.RemoteClosed, ..)) ->
+      State(..state, streams: dict.delete(state.streams, id))
+    Ok(stream_state) -> {
+      let stream_state = stream.State(..stream_state, state: stream.LocalClosed)
+      State(..state, streams: dict.insert(state.streams, id, stream_state))
+    }
+    Error(_nil) -> state
+  }
+}
+
 pub fn append_data(state: State, data: BitArray) -> State {
   State(..state, frame_buffer: buffer.append(state.frame_buffer, data))
 }
@@ -168,8 +180,7 @@ fn handle_frame(
         _stream_id -> {
           state.streams
           |> dict.get(identifier)
-          |> result.replace_error("Window update for non-existent stream")
-          |> result.try(fn(stream) {
+          |> result.map(fn(stream) {
             case
               flow_control.update_send_window(stream.send_window_size, amount)
             {
@@ -186,6 +197,7 @@ fn handle_frame(
               _err -> Error("Failed to update send window")
             }
           })
+          |> result.unwrap(Ok(state))
         }
       }
     }
@@ -208,14 +220,16 @@ fn handle_frame(
           conn,
           state.self,
           // fn(resp) { process.send(state.self, Send(identifier, resp)) },
-          end_stream,
         )
       process.send(new_stream.data, Ready)
 
       let stream_state =
         stream.State(
           id: identifier,
-          state: stream.Open,
+          state: case end_stream {
+            True -> stream.RemoteClosed
+            False -> stream.Open
+          },
           subject: new_stream.data,
           receive_window_size: state.settings.initial_window_size,
           send_window_size: state.settings.initial_window_size,
@@ -239,7 +253,6 @@ fn handle_frame(
       // TODO:  this whole business should much more gracefully handle
       // individual stream errors rather than just blowin up
       |> result.replace_error("Stream failed to receive data")
-      // TODO:  handle end of stream?
       |> result.map(fn(update) {
         let #(new_stream, increment) = update
         let _ = case conn_window_increment > 0 {
@@ -269,9 +282,19 @@ fn handle_frame(
           new_stream.subject,
           stream.Data(bits: data, end: end_stream),
         )
+        let streams = case end_stream, new_stream.state {
+          True, stream.LocalClosed -> dict.delete(state.streams, identifier)
+          True, _ ->
+            dict.insert(
+              state.streams,
+              identifier,
+              stream.State(..new_stream, state: stream.RemoteClosed),
+            )
+          False, _ -> dict.insert(state.streams, identifier, new_stream)
+        }
         State(
           ..state,
-          streams: dict.insert(state.streams, identifier, new_stream),
+          streams: streams,
           receive_window_size: conn_receive_window_size,
         )
       })
