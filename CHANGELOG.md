@@ -15,6 +15,7 @@
 - Apply HTTP/2 settings from the client and ignore unknown settings
 - Respect HTTP/2 flow control windows when sending response bodies
 - Send HTTP/2 `GoAway` on connection errors and close normally on `GoAway`
+- Support `server_sent_events` over HTTP/2
 
 # v6.0.3
 

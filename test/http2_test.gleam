@@ -2,7 +2,10 @@ import gleam/bytes_tree
 import gleam/erlang/process
 import gleam/http/request
 import gleam/http/response
+import gleam/int
+import gleam/otp/actor
 import gleam/string
+import gleam/string_tree
 import mist
 import scaffold.{bitstring_response_should_equal}
 
@@ -416,4 +419,67 @@ pub fn it_sends_go_away_on_malformed_headers_test() {
     )
 
   bitstring_response_should_equal(actual, expected)
+}
+
+pub fn it_sends_server_sent_events_test() {
+  let events = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/events"),
+  ]
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, fn(req) {
+    case request.path_segments(req) {
+      ["events"] ->
+        mist.server_sent_events(
+          req,
+          response.new(200),
+          init: fn(subj) {
+            process.send(subj, 1)
+            process.send(subj, 2)
+            process.send(subj, 3)
+            Nil
+          },
+          loop: fn(state, message, conn) {
+            let event =
+              mist.event(string_tree.from_string(int.to_string(message)))
+            let assert Ok(_nil) = mist.send_event(conn, event)
+            case message {
+              3 -> actor.stop()
+              _ -> actor.continue(state)
+            }
+          },
+        )
+      _ -> scaffold.uri_echo_handler(req)
+    }
+  })
+
+  let assert [actual, after] =
+    scaffold.http2_requests([#(<<>>, events, <<>>), #(<<>>, headers, <<>>)])
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-type", "text/event-stream")
+    |> response.prepend_header("cache-control", "no-cache")
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<"data: 1\n\ndata: 2\n\ndata: 3\n\n":utf8>>),
+    )
+
+  bitstring_response_should_equal(actual, expected)
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "28")
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<"GET http://example.com:8080/":utf8>>),
+    )
+
+  bitstring_response_should_equal(after, expected)
 }

@@ -17,7 +17,7 @@ import mist/internal/http2/frame.{
 import mist/internal/http2/stream.{type SendMessage, Ready}
 
 pub type PendingSend {
-  PendingSend(identifier: StreamIdentifier(Frame), data: BitArray)
+  PendingSend(identifier: StreamIdentifier(Frame), data: BitArray, end: Bool)
 }
 
 pub type State {
@@ -73,21 +73,23 @@ pub fn send_data(
   conn: Connection,
   id: StreamIdentifier(Frame),
   data: BitArray,
+  end: Bool,
 ) -> Result(State, String) {
-  case dict.get(state.streams, id), data {
-    _, <<>> -> Ok(close_stream(state, id))
-    Error(_nil), _ -> Ok(state)
-    Ok(stream), _ -> {
+  let queued =
+    list.any(state.pending_sends, fn(pending) { pending.identifier == id })
+  case dict.get(state.streams, id) {
+    Error(_nil) -> Ok(state)
+    Ok(stream) -> {
       let size =
         flow_control.compute_send_size(
           stream.send_window_size,
           state.send_window_size,
           bit_array.byte_size(data),
         )
-      case size > 0 {
-        True -> {
+      case size > 0 || data == <<>>, queued {
+        True, False -> {
           let assert <<data:bytes-size(size), rest:bytes>> = data
-          let end_stream = rest == <<>>
+          let end_stream = end && rest == <<>>
           let sent =
             http2.send_body(
               conn,
@@ -108,16 +110,17 @@ pub fn send_data(
               send_window_size: state.send_window_size - size,
               streams: dict.insert(state.streams, id, stream),
             )
-          case end_stream {
-            True -> close_stream(state, id)
-            False -> {
-              let pending = PendingSend(identifier: id, data: rest)
+          case end_stream, rest {
+            True, _ -> close_stream(state, id)
+            False, <<>> -> state
+            False, _ -> {
+              let pending = PendingSend(identifier: id, data: rest, end: end)
               State(..state, pending_sends: [pending, ..state.pending_sends])
             }
           }
         }
-        False -> {
-          let pending = PendingSend(identifier: id, data: data)
+        _, _ -> {
+          let pending = PendingSend(identifier: id, data: data, end: end)
           Ok(State(..state, pending_sends: [pending, ..state.pending_sends]))
         }
       }
@@ -129,7 +132,7 @@ fn do_pending_sends(state: State, conn: Connection) -> Result(State, String) {
   state.pending_sends
   |> list.reverse
   |> list.try_fold(State(..state, pending_sends: []), fn(state, pending) {
-    send_data(state, conn, pending.identifier, pending.data)
+    send_data(state, conn, pending.identifier, pending.data, pending.end)
   })
 }
 

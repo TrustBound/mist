@@ -795,6 +795,19 @@ pub fn server_sent_events(
   init init: fn(Subject(message)) -> state,
   loop loop: fn(state, message, SSEConnection) -> actor.Next(state, message),
 ) -> Response(ResponseData) {
+  case req.body.body {
+    http.Initial(_data) -> http1_server_sent_events(req, resp, init, loop)
+    http.Stream(send_headers: send_headers, ..) ->
+      http2_server_sent_events(req, resp, init, loop, send_headers)
+  }
+}
+
+fn http1_server_sent_events(
+  req: Request(Connection),
+  resp: Response(discard),
+  init: fn(Subject(message)) -> state,
+  loop: fn(state, message, SSEConnection) -> actor.Next(state, message),
+) -> Response(ResponseData) {
   let with_default_headers =
     resp
     |> response.set_header("content-type", "text/event-stream")
@@ -852,6 +865,52 @@ pub fn server_sent_events(
   }
 }
 
+fn http2_server_sent_events(
+  req: Request(Connection),
+  resp: Response(discard),
+  init: fn(Subject(message)) -> state,
+  loop: fn(state, message, SSEConnection) -> actor.Next(state, message),
+  send_headers: fn(Int, List(gleam_http.Header)) -> Nil,
+) -> Response(ResponseData) {
+  let with_default_headers =
+    resp
+    |> response.set_header("content-type", "text/event-stream")
+    |> response.set_header("cache-control", "no-cache")
+
+  send_headers(200, with_default_headers.headers)
+
+  let start = fn() {
+    actor.new_with_initialiser(1000, fn(subj) {
+      init(subj)
+      |> actor.initialised
+      |> actor.returning(process.self())
+      |> actor.selecting(process.new_selector() |> process.select(subj))
+      |> Ok
+    })
+    |> actor.on_message(fn(state, message) {
+      loop(state, message, SSEConnection(req.body))
+    })
+    |> actor.start
+    |> result.map(fn(started) {
+      let pid = started.data
+      actor.Started(pid, pid)
+    })
+  }
+  let factory_supervisor = factory.get_by_name(req.body.factory_name)
+  case factory.start_child(factory_supervisor, start) {
+    Ok(started) -> {
+      let monitor = process.monitor(started.data)
+      process.new_selector()
+      |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+      |> process.selector_receive_forever
+    }
+    Error(_start_error) ->
+      logging.log(logging.Error, "Failed to start SSE process")
+  }
+
+  response.new(200) |> response.set_body(ServerSentEvents)
+}
+
 // This constructs an event from the provided type.  If `id`, `event` or `retry` are
 // provided, they are included in the message.  The data provided is split
 // across newlines, which I think is per the spec? The `Result` returned here
@@ -884,9 +943,14 @@ pub fn send_event(conn: SSEConnection, event: SSEEvent) -> Result(Nil, Nil) {
     |> string_tree.append("\n\n")
     |> bytes_tree.from_string_tree
 
-  transport.send(conn.transport, conn.socket, message)
-  |> result.replace(Nil)
-  |> result.replace_error(Nil)
+  case conn.body {
+    http.Initial(_data) ->
+      transport.send(conn.transport, conn.socket, message)
+      |> result.replace(Nil)
+      |> result.replace_error(Nil)
+    http.Stream(send_data: send_data, ..) ->
+      send_data(bytes_tree.to_bit_array(message))
+  }
 }
 
 pub type ChunkNext(state) {

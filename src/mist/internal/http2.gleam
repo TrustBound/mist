@@ -57,7 +57,7 @@ pub fn update_settings(
   })
 }
 
-fn send_headers(
+pub fn send_headers(
   context: HpackContext,
   conn: Connection,
   headers: List(Header),

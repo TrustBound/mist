@@ -1,6 +1,7 @@
 import gleam/bytes_tree
 import gleam/erlang/process.{type Selector, type Subject}
 import gleam/http/response
+import gleam/int
 import gleam/option.{type Option, Some}
 import gleam/otp/actor
 import gleam/otp/factory_supervisor as factory
@@ -16,7 +17,9 @@ import mist/internal/http.{
 import mist/internal/http/handler as http_handler
 import mist/internal/http2
 import mist/internal/http2/handler as http2_handler
-import mist/internal/http2/stream.{type SendMessage, Reset, Send}
+import mist/internal/http2/stream.{
+  type SendMessage, Reset, Send, SendData, SendHeaders,
+}
 
 pub type HandlerError {
   InvalidRequest(DecodeError)
@@ -76,26 +79,46 @@ pub fn with_func(
               state.settings.max_frame_size,
             )
             |> result.try(fn(context) {
-              state
-              |> http2_handler.send_hpack_context(context)
-              |> http2_handler.send_data(
-                conn,
-                id,
-                bytes_tree.to_bit_array(bytes),
-              )
+              let state = http2_handler.send_hpack_context(state, context)
+              case bytes_tree.to_bit_array(bytes) {
+                <<>> -> Ok(http2_handler.close_stream(state, id))
+                data -> http2_handler.send_data(state, conn, id, data, True)
+              }
             })
           }
           File(..) -> Error("File sending unsupported over HTTP/2")
           // TODO:  properly error in some fashion for these
           Websocket -> Error("WebSocket unsupported for HTTP/2")
           Chunked -> Error("Chunked encoding not supported for HTTP/2")
-          ServerSentEvents -> Error("Server-Sent Events unsupported for HTTP/2")
+          ServerSentEvents ->
+            http2_handler.send_data(state, conn, id, <<>>, True)
         }
         |> result.map(Http2)
         |> result.map_error(fn(err) {
           logging.log(logging.Debug, "Error sending HTTP/2 data: " <> err)
           Error(err)
         })
+      }
+      User(SendHeaders(id, status, headers)), Http2(state) -> {
+        [#(":status", int.to_string(status)), ..headers]
+        |> http2.send_headers(
+          state.send_hpack_context,
+          conn,
+          _,
+          False,
+          id,
+          state.settings.max_frame_size,
+        )
+        |> result.map(fn(context) {
+          Http2(http2_handler.send_hpack_context(state, context))
+        })
+        |> result.map_error(Error)
+      }
+      User(SendData(id, data)), Http2(state) -> {
+        state
+        |> http2_handler.send_data(conn, id, data, False)
+        |> result.map(Http2)
+        |> result.map_error(Error)
       }
       User(Reset(id, error)), Http2(state) -> {
         state

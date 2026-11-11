@@ -26,6 +26,12 @@ pub type Message {
 pub type SendMessage {
   Send(identifier: StreamIdentifier(Frame), resp: Response(ResponseData))
   Reset(identifier: StreamIdentifier(Frame), error: frame.ConnectionError)
+  SendHeaders(
+    identifier: StreamIdentifier(Frame),
+    status: Int,
+    headers: List(Header),
+  )
+  SendData(identifier: StreamIdentifier(Frame), data: BitArray)
 }
 
 pub type StreamState {
@@ -75,6 +81,7 @@ pub fn new(
           |> list.key_find("content-length")
           |> result.try(int.parse)
           |> result.unwrap(0)
+        let self = process.self()
         let conn =
           Connection(
             ..connection,
@@ -86,6 +93,19 @@ pub fn new(
               attempts: 0,
               data: <<>>,
               remaining: content_length,
+              send_headers: fn(status, headers) {
+                process.send(sender, SendHeaders(identifier, status, headers))
+              },
+              send_data: fn(data) {
+                let open =
+                  process.subject_owner(sender)
+                  |> result.map(process.is_alive)
+                  |> result.unwrap(False)
+                case open && process.is_alive(self) {
+                  True -> Ok(process.send(sender, SendData(identifier, data)))
+                  False -> Error(Nil)
+                }
+              },
             ),
           )
 

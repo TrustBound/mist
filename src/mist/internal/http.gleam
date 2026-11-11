@@ -389,6 +389,8 @@ pub type Body {
     data: BitArray,
     remaining: Int,
     attempts: Int,
+    send_headers: fn(Int, List(http.Header)) -> Nil,
+    send_data: fn(BitArray) -> Result(Nil, Nil),
   )
 }
 
@@ -442,6 +444,8 @@ pub fn read_body(
         data: data,
         remaining: remaining,
         attempts: attempts,
+        send_headers: send_headers,
+        send_data: send_data,
       )
       if remaining > 0
     -> {
@@ -460,7 +464,14 @@ pub fn read_body(
             req,
             Connection(
               ..req.body,
-              body: Stream(selector, new_data, left, attempts + 1),
+              body: Stream(
+                selector,
+                new_data,
+                left,
+                attempts + 1,
+                send_headers,
+                send_data,
+              ),
             ),
           ))
       }
