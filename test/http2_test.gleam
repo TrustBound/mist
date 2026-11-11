@@ -335,3 +335,27 @@ pub fn it_ignores_unknown_settings_test() {
 
   bitstring_response_should_equal(actual, expected)
 }
+
+pub fn it_waits_for_window_updates_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let body = <<string.repeat("a", 100_000):utf8>>
+
+  use <- scaffold.open_server(8888, fn(_req) {
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.from_bit_array(body)))
+  })
+
+  let actual = scaffold.http2_request(headers)
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "100000")
+    |> response.set_body(bytes_tree.from_bit_array(body))
+
+  bitstring_response_should_equal(actual, expected)
+}

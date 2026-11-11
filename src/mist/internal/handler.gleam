@@ -75,6 +75,15 @@ pub fn with_func(
               id,
               state.settings.max_frame_size,
             )
+            |> result.try(fn(context) {
+              state
+              |> http2_handler.send_hpack_context(context)
+              |> http2_handler.send_data(
+                conn,
+                id,
+                bytes_tree.to_bit_array(bytes),
+              )
+            })
           }
           File(..) -> Error("File sending unsupported over HTTP/2")
           // TODO:  properly error in some fashion for these
@@ -82,12 +91,7 @@ pub fn with_func(
           Chunked -> Error("Chunked encoding not supported for HTTP/2")
           ServerSentEvents -> Error("Server-Sent Events unsupported for HTTP/2")
         }
-        |> result.map(fn(context) {
-          state
-          |> http2_handler.send_hpack_context(context)
-          |> http2_handler.close_stream(id)
-          |> Http2
-        })
+        |> result.map(Http2)
         |> result.map_error(fn(err) {
           logging.log(logging.Debug, "Error sending HTTP/2 data: " <> err)
           Error(err)

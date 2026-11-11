@@ -9,7 +9,7 @@ import gleam/string
 import logging
 import mist/internal/buffer.{type Buffer}
 import mist/internal/http.{type Connection, type Handler, Connection, Initial}
-import mist/internal/http2.{type HpackContext, type Http2Settings, Http2Settings}
+import mist/internal/http2.{type HpackContext, type Http2Settings}
 import mist/internal/http2/flow_control
 import mist/internal/http2/frame.{
   type Frame, type StreamIdentifier, Complete, Continued,
@@ -17,7 +17,7 @@ import mist/internal/http2/frame.{
 import mist/internal/http2/stream.{type SendMessage, Ready}
 
 pub type PendingSend {
-  PendingSend
+  PendingSend(identifier: StreamIdentifier(Frame), data: BitArray)
 }
 
 pub type State {
@@ -65,6 +65,71 @@ pub fn reset_stream(
   |> http2.send_frame(conn.socket, conn.transport)
   |> result.replace(State(..state, streams: dict.delete(state.streams, id)))
   |> result.replace_error("Failed to reset stream")
+}
+
+pub fn send_data(
+  state: State,
+  conn: Connection,
+  id: StreamIdentifier(Frame),
+  data: BitArray,
+) -> Result(State, String) {
+  case dict.get(state.streams, id), data {
+    _, <<>> -> Ok(close_stream(state, id))
+    Error(_nil), _ -> Ok(state)
+    Ok(stream), _ -> {
+      let size =
+        flow_control.compute_send_size(
+          stream.send_window_size,
+          state.send_window_size,
+          bit_array.byte_size(data),
+        )
+      case size > 0 {
+        True -> {
+          let assert <<data:bytes-size(size), rest:bytes>> = data
+          let end_stream = rest == <<>>
+          let sent =
+            http2.send_body(
+              conn,
+              data,
+              id,
+              end_stream,
+              state.settings.max_frame_size,
+            )
+          use _nil <- result.map(sent)
+          let stream =
+            stream.State(
+              ..stream,
+              send_window_size: stream.send_window_size - size,
+            )
+          let state =
+            State(
+              ..state,
+              send_window_size: state.send_window_size - size,
+              streams: dict.insert(state.streams, id, stream),
+            )
+          case end_stream {
+            True -> close_stream(state, id)
+            False -> {
+              let pending = PendingSend(identifier: id, data: rest)
+              State(..state, pending_sends: [pending, ..state.pending_sends])
+            }
+          }
+        }
+        False -> {
+          let pending = PendingSend(identifier: id, data: data)
+          Ok(State(..state, pending_sends: [pending, ..state.pending_sends]))
+        }
+      }
+    }
+  }
+}
+
+fn do_pending_sends(state: State, conn: Connection) -> Result(State, String) {
+  state.pending_sends
+  |> list.reverse
+  |> list.try_fold(State(..state, pending_sends: []), fn(state, pending) {
+    send_data(state, conn, pending.identifier, pending.data)
+  })
 }
 
 pub fn append_data(state: State, data: BitArray) -> State {
@@ -176,16 +241,10 @@ fn handle_frame(
     None, frame.WindowUpdate(amount, identifier) -> {
       case frame.get_stream_identifier(identifier) {
         0 -> {
-          // do_pending_sends(state)
-          Ok(
-            State(
-              ..state,
-              settings: Http2Settings(
-                ..state.settings,
-                initial_window_size: amount,
-              ),
-            ),
-          )
+          flow_control.update_send_window(state.send_window_size, amount)
+          |> result.replace_error("Failed to update send window")
+          |> result.map(fn(size) { State(..state, send_window_size: size) })
+          |> result.try(do_pending_sends(_, conn))
         }
         _stream_id -> {
           state.streams
@@ -208,6 +267,7 @@ fn handle_frame(
             }
           })
           |> result.unwrap(Ok(state))
+          |> result.try(do_pending_sends(_, conn))
         }
       }
     }
@@ -345,6 +405,7 @@ fn handle_frame(
         )
         |> result.replace_error("Failed to respond to settings ACK")
       })
+      |> result.try(do_pending_sends(_, conn))
     }
     None, frame.Ping(ack: False, data: data) -> {
       http2.send_frame(

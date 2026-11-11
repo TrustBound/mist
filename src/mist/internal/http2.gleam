@@ -118,20 +118,21 @@ fn encode_continuation(
   }
 }
 
-fn send_body(
+pub fn send_body(
   conn: Connection,
   data: BitArray,
   stream_identifier: StreamIdentifier(Frame),
+  end_stream: Bool,
   max_frame_size: Int,
 ) -> Result(Nil, String) {
   case data {
     <<data:bytes-size(max_frame_size), rest:bits>> if rest != <<>> -> {
       send_data(conn, data, stream_identifier, False)
       |> result.try(fn(_nil) {
-        send_body(conn, rest, stream_identifier, max_frame_size)
+        send_body(conn, rest, stream_identifier, end_stream, max_frame_size)
       })
     }
-    _ -> send_data(conn, data, stream_identifier, True)
+    _ -> send_data(conn, data, stream_identifier, end_stream)
   }
 }
 
@@ -182,17 +183,9 @@ pub fn send_bytes_tree(
 
   let headers = [#(":status", int.to_string(resp.status)), ..resp.headers]
 
-  case bytes_tree.byte_size(resp.body) {
-    0 -> send_headers(context, conn, headers, True, id, max_frame_size)
-    _ -> {
-      send_headers(context, conn, headers, False, id, max_frame_size)
-      |> result.try(fn(context) {
-        // TODO:  this should be broken up by window size
-        send_body(conn, bytes_tree.to_bit_array(resp.body), id, max_frame_size)
-        |> result.replace(context)
-      })
-    }
-  }
+  let end_stream = bytes_tree.byte_size(resp.body) == 0
+
+  send_headers(context, conn, headers, end_stream, id, max_frame_size)
 }
 
 pub type HpackContext

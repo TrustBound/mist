@@ -336,7 +336,7 @@ pub fn http2_requests(
   >>
 
   let responses =
-    send_requests(socket, requests, preface, 1, context, context, <<>>)
+    send_requests(socket, requests, preface, 1, context, context, <<>>, 65_535)
   let assert Ok(_nil) = tcp.close(socket)
 
   responses
@@ -350,6 +350,7 @@ fn send_requests(
   encode_context: http2.HpackContext,
   decode_context: http2.HpackContext,
   rest: BitArray,
+  window: Int,
 ) -> List(Response(BitArray)) {
   case requests {
     [] -> []
@@ -380,12 +381,13 @@ fn send_requests(
         |> bit_array.append(body_frame)
         |> bytes_tree.from_bit_array
         |> tcp.send(socket, _)
-      let #(resp, decode_context, rest) =
+      let #(resp, decode_context, rest, window) =
         receive_response(
           socket,
           rest,
           decode_context,
           frame.stream_identifier(identifier),
+          window,
           Response(status: 0, headers: [], body: <<>>),
         )
 
@@ -399,6 +401,7 @@ fn send_requests(
           encode_context,
           decode_context,
           rest,
+          window,
         )
       ]
     }
@@ -444,10 +447,11 @@ fn receive_response(
   data: BitArray,
   context: http2.HpackContext,
   identifier: frame.StreamIdentifier(Frame),
+  window: Int,
   resp: Response(BitArray),
-) -> #(Response(BitArray), http2.HpackContext, BitArray) {
+) -> #(Response(BitArray), http2.HpackContext, BitArray, Int) {
   let #(received, rest) = receive_frame(socket, data)
-  let #(resp, context, end_stream) = case received {
+  let #(resp, context, window, end_stream) = case received {
     frame.Header(data: frame.Complete(data), end_stream: end_stream, ..) -> {
       let assert Ok(#(headers, context)) = http2.hpack_decode(context, data)
       let assert Ok(#(status, headers)) =
@@ -457,29 +461,60 @@ fn receive_response(
       #(
         Response(status: status, headers: headers, body: <<>>),
         context,
+        window,
         end_stream,
       )
     }
-    frame.Data(data: data, end_stream: end_stream, ..) -> #(
+    frame.Data(data: data, end_stream: end_stream, identifier: stream) -> #(
       response.set_body(resp, <<resp.body:bits, data:bits>>),
       context,
+      update_window(socket, stream, window - bit_array.byte_size(data)),
       end_stream,
     )
     frame.Ping(ack: True, data: data) -> #(
       response.set_body(resp, data),
       context,
+      window,
       True,
     )
     frame.Termination(identifier: reset, ..) if reset == identifier -> #(
       resp,
       context,
+      window,
       True,
     )
-    _frame -> #(resp, context, False)
+    _frame -> #(resp, context, window, False)
   }
   case end_stream {
-    True -> #(resp, context, rest)
-    False -> receive_response(socket, rest, context, identifier, resp)
+    True -> #(resp, context, rest, window)
+    False -> receive_response(socket, rest, context, identifier, window, resp)
+  }
+}
+
+fn update_window(
+  socket: Socket,
+  identifier: frame.StreamIdentifier(Frame),
+  window: Int,
+) -> Int {
+  assert window >= 0
+  case window {
+    0 -> {
+      let assert Ok(_nil) =
+        <<
+          frame.encode(frame.WindowUpdate(
+            amount: 65_535,
+            identifier: frame.stream_identifier(0),
+          )):bits,
+          frame.encode(frame.WindowUpdate(
+            amount: 65_535,
+            identifier: identifier,
+          )):bits,
+        >>
+        |> bytes_tree.from_bit_array
+        |> tcp.send(socket, _)
+      65_535
+    }
+    _ -> window
   }
 }
 

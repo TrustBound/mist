@@ -13,6 +13,7 @@
 - Reset HTTP/2 streams on stream errors instead of closing the connection
 - Respond to HTTP/2 `Ping` frames and stop streams reset by the client
 - Apply HTTP/2 settings from the client and ignore unknown settings
+- Respect HTTP/2 flow control windows when sending response bodies
 
 # v6.0.3
 
