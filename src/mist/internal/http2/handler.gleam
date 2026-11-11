@@ -241,7 +241,7 @@ fn handle_frame(
             False -> stream.Open
           },
           subject: new_stream.data,
-          receive_window_size: state.settings.initial_window_size,
+          receive_window_size: 65_535,
           send_window_size: state.settings.initial_window_size,
           pending_content_length: pending_content_length,
         )
@@ -316,11 +316,35 @@ fn handle_frame(
     None, frame.Settings(ack: True, ..) -> {
       Ok(state)
     }
-    // TODO:  update any settings from this
-    _, frame.Settings(..) -> {
-      http2.send_frame(frame.settings_ack(), conn.socket, conn.transport)
-      |> result.replace(state)
-      |> result.replace_error("Failed to respond to settings ACK")
+    _, frame.Settings(settings: settings, ..) -> {
+      let new_settings = http2.update_settings(state.settings, settings)
+      let delta =
+        new_settings.initial_window_size - state.settings.initial_window_size
+      state.streams
+      |> dict.to_list
+      |> list.try_map(fn(pair) {
+        let #(id, stream) = pair
+        flow_control.update_send_window(stream.send_window_size, delta)
+        |> result.map(fn(size) {
+          #(id, stream.State(..stream, send_window_size: size))
+        })
+      })
+      |> result.replace_error("Failed to update send window")
+      |> result.try(fn(streams) {
+        http2.send_frame(frame.settings_ack(), conn.socket, conn.transport)
+        |> result.replace(
+          State(
+            ..state,
+            send_hpack_context: http2.hpack_max_table_size(
+              state.send_hpack_context,
+              new_settings.header_table_size,
+            ),
+            settings: new_settings,
+            streams: dict.from_list(streams),
+          ),
+        )
+        |> result.replace_error("Failed to respond to settings ACK")
+      })
     }
     None, frame.Ping(ack: False, data: data) -> {
       http2.send_frame(

@@ -140,3 +140,22 @@ pub fn it_should_decode_unknown_frame_test() {
   let data = <<0, 0, 1, 255, 0, 0, 0, 0, 1, 0, 1, 2, 3>>
   assert frame.decode(data) == Ok(#(frame.Unknown(255), <<1, 2, 3>>))
 }
+
+pub fn it_should_return_error_for_small_max_frame_size_test() {
+  let data = <<0, 0, 6, 4, 0, 0, 0, 0, 0, 0, 5, 0, 0, 0, 0>>
+  assert frame.decode(data) == Error(frame.ProtocolError)
+}
+
+pub fn it_should_decode_settings_in_order_test() {
+  let data = <<0, 0, 12, 4, 0, 0, 0, 0, 0, 0, 5, 0, 1, 0, 0, 0, 5, 0, 0, 64, 0>>
+  assert frame.decode(data)
+    == Ok(
+      #(
+        frame.Settings(ack: False, settings: [
+          frame.MaxFrameSize(65_536),
+          frame.MaxFrameSize(16_384),
+        ]),
+        <<>>,
+      ),
+    )
+}

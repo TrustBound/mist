@@ -620,7 +620,10 @@ fn get_settings(
   acc: List(Setting),
 ) -> Result(List(Setting), ConnectionError) {
   case data {
-    <<>> -> Ok(acc)
+    <<>> -> Ok(list.reverse(acc))
+    <<identifier:size(16), _value:size(32), rest:bits>>
+      if identifier < 1 || identifier > 6
+    -> get_settings(rest, acc)
     <<identifier:size(16), value:size(32), rest:bits>> -> {
       case get_setting(identifier, value) {
         Ok(setting) -> get_settings(rest, [setting, ..acc])
@@ -651,7 +654,7 @@ fn get_setting(identifier: Int, value: Int) -> Result(Setting, ConnectionError) 
     }
     5 -> {
       case value {
-        n if n > 16_777_215 -> Error(ProtocolError)
+        n if n < 16_384 || n > 16_777_215 -> Error(ProtocolError)
         _ -> Ok(MaxFrameSize(value))
       }
     }
