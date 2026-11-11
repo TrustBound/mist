@@ -16,7 +16,7 @@ import mist/internal/http.{
 import mist/internal/http/handler as http_handler
 import mist/internal/http2
 import mist/internal/http2/handler as http2_handler
-import mist/internal/http2/stream.{type SendMessage, Send}
+import mist/internal/http2/stream.{type SendMessage, Reset, Send}
 
 pub type HandlerError {
   InvalidRequest(DecodeError)
@@ -61,7 +61,7 @@ pub fn with_func(
       )
 
     let result = case msg, state {
-      User(Send(..)), Http1(..) -> {
+      User(_msg), Http1(..) -> {
         Error(Error("Attempted to send HTTP/2 response without upgrade"))
       }
       User(Send(id, resp)), Http2(state) -> {
@@ -92,6 +92,12 @@ pub fn with_func(
           logging.log(logging.Debug, "Error sending HTTP/2 data: " <> err)
           Error(err)
         })
+      }
+      User(Reset(id, error)), Http2(state) -> {
+        state
+        |> http2_handler.reset_stream(conn, id, error)
+        |> result.map(Http2)
+        |> result.map_error(Error)
       }
       Packet(msg), Http1(state, self) -> {
         let _ = case state.idle_timer {

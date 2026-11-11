@@ -10,6 +10,7 @@
 - Fix HTTP/2 responses to requests with a body and stop stream processes
 - Handle HTTP/2 frames received with the client preface
 - Split HTTP/2 responses into frames of the maximum frame size
+- Reset HTTP/2 streams on stream errors instead of closing the connection
 
 # v6.0.3
 

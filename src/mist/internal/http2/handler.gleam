@@ -55,6 +55,18 @@ pub fn close_stream(state: State, id: StreamIdentifier(Frame)) -> State {
   }
 }
 
+pub fn reset_stream(
+  state: State,
+  conn: Connection,
+  id: StreamIdentifier(Frame),
+  error: frame.ConnectionError,
+) -> Result(State, String) {
+  frame.Termination(error: error, identifier: id)
+  |> http2.send_frame(conn.socket, conn.transport)
+  |> result.replace(State(..state, streams: dict.delete(state.streams, id)))
+  |> result.replace_error("Failed to reset stream")
+}
+
 pub fn append_data(state: State, data: BitArray) -> State {
   State(..state, frame_buffer: buffer.append(state.frame_buffer, data))
 }
@@ -113,8 +125,6 @@ pub fn call(
   }
 }
 
-// TODO:  this should use the frame error types to actually do some shit with
-// the stream(s)
 fn handle_frame(
   frame: Frame,
   state: State,
@@ -246,28 +256,25 @@ fn handle_frame(
           state.receive_window_size,
           data_size,
         )
+      let _ = case conn_window_increment > 0 {
+        True -> {
+          http2.send_frame(
+            frame.WindowUpdate(
+              identifier: frame.stream_identifier(0),
+              amount: conn_window_increment,
+            ),
+            conn.socket,
+            conn.transport,
+          )
+        }
+        False -> Ok(Nil)
+      }
 
       state.streams
       |> dict.get(identifier)
       |> result.map(stream.receive_data(_, data_size))
-      // TODO:  this whole business should much more gracefully handle
-      // individual stream errors rather than just blowin up
-      |> result.replace_error("Stream failed to receive data")
       |> result.map(fn(update) {
         let #(new_stream, increment) = update
-        let _ = case conn_window_increment > 0 {
-          True -> {
-            http2.send_frame(
-              frame.WindowUpdate(
-                identifier: frame.stream_identifier(0),
-                amount: conn_window_increment,
-              ),
-              conn.socket,
-              conn.transport,
-            )
-          }
-          False -> Ok(Nil)
-        }
         let _ = case increment > 0 {
           True -> {
             http2.send_frame(
@@ -297,6 +304,10 @@ fn handle_frame(
           streams: streams,
           receive_window_size: conn_receive_window_size,
         )
+      })
+      |> result.try_recover(fn(_nil) {
+        State(..state, receive_window_size: conn_receive_window_size)
+        |> reset_stream(conn, identifier, frame.StreamClosed)
       })
     }
     None, frame.Priority(..) -> {

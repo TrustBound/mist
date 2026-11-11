@@ -185,3 +185,58 @@ pub fn it_splits_large_headers_into_frames_test() {
 
   bitstring_response_should_equal(actual, expected)
 }
+
+pub fn it_resets_data_on_closed_streams_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, scaffold.uri_echo_handler)
+
+  let assert [_first, actual] =
+    scaffold.http2_requests([
+      #(<<>>, headers, <<>>),
+      #(<<0, 0, 1, 0, 0, 0, 0, 0, 1, 97>>, headers, <<>>),
+    ])
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "28")
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<"GET http://example.com:8080/":utf8>>),
+    )
+
+  bitstring_response_should_equal(actual, expected)
+}
+
+pub fn it_resets_streams_with_invalid_methods_test() {
+  let invalid = [
+    #(":method", "BAD METHOD"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, scaffold.uri_echo_handler)
+
+  let assert [_reset, actual] =
+    scaffold.http2_requests([#(<<>>, invalid, <<>>), #(<<>>, headers, <<>>)])
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "28")
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<"GET http://example.com:8080/":utf8>>),
+    )
+
+  bitstring_response_should_equal(actual, expected)
+}

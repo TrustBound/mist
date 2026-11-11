@@ -25,6 +25,7 @@ pub type Message {
 
 pub type SendMessage {
   Send(identifier: StreamIdentifier(Frame), resp: Response(ResponseData))
+  Reset(identifier: StreamIdentifier(Frame), error: frame.ConnectionError)
 }
 
 pub type StreamState {
@@ -106,10 +107,11 @@ pub fn new(
             process.send(sender, Send(identifier, resp))
             actor.stop()
           }
-          Error(err) ->
-            actor.stop_abnormal(
-              "Failed to respond to request: " <> string.inspect(err),
-            )
+          Error(_nil) -> {
+            logging.log(logging.Debug, "Invalid HTTP/2 request")
+            process.send(sender, Reset(identifier, frame.ProtocolError))
+            actor.stop()
+          }
         }
       }
       _msg -> actor.continue(state)

@@ -385,6 +385,7 @@ fn send_requests(
           socket,
           rest,
           decode_context,
+          frame.stream_identifier(identifier),
           Response(status: 0, headers: [], body: <<>>),
         )
 
@@ -442,6 +443,7 @@ fn receive_response(
   socket: Socket,
   data: BitArray,
   context: http2.HpackContext,
+  identifier: frame.StreamIdentifier(Frame),
   resp: Response(BitArray),
 ) -> #(Response(BitArray), http2.HpackContext, BitArray) {
   let #(received, rest) = receive_frame(socket, data)
@@ -463,11 +465,16 @@ fn receive_response(
       context,
       end_stream,
     )
+    frame.Termination(identifier: reset, ..) if reset == identifier -> #(
+      resp,
+      context,
+      True,
+    )
     _frame -> #(resp, context, False)
   }
   case end_stream {
     True -> #(resp, context, rest)
-    False -> receive_response(socket, rest, context, resp)
+    False -> receive_response(socket, rest, context, identifier, resp)
   }
 }
 
