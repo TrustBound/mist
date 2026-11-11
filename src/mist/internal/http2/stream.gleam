@@ -1,3 +1,4 @@
+import gleam/bytes_tree
 import gleam/erlang/process.{type Selector, type Subject}
 import gleam/http.{type Header} as ghttp
 import gleam/http/request.{type Request}
@@ -10,8 +11,9 @@ import gleam/pair
 import gleam/result
 import gleam/string
 import gleam/uri
+import logging
 import mist/internal/http.{
-  type Connection, type Handler, type ResponseData, Connection, Stream,
+  type Connection, type Handler, type ResponseData, Bytes, Connection, Stream,
 }
 import mist/internal/http2/flow_control
 import mist/internal/http2/frame.{type Frame, type StreamIdentifier}
@@ -101,7 +103,14 @@ pub fn new(
 
         case result {
           Ok(value) -> {
-            let resp = handler(value)
+            let resp = case parse_host(value) {
+              Ok(req) -> handler(req)
+              Error(_nil) -> {
+                logging.log(logging.Debug, "Missing HTTP `host` header")
+                response.new(400)
+                |> response.set_body(Bytes(bytes_tree.new()))
+              }
+            }
             process.send(state.data_subject, Done)
             actor.continue(InternalState(..state, pending_response: Some(resp)))
           }
@@ -145,23 +154,26 @@ pub fn make_request(
 ) -> Result(Request(Connection), Nil) {
   case headers {
     [] -> Ok(req)
-    [#("method", method), ..rest] -> {
+    [#(":method", method), ..rest] -> {
       method
       |> ghttp.parse_method
       |> result.replace_error(Nil)
       |> result.map(request.set_method(req, _))
       |> result.try(make_request(rest, _))
     }
-    [#("scheme", scheme), ..rest] -> {
+    [#(":scheme", scheme), ..rest] -> {
       scheme
       |> ghttp.scheme_from_string
       |> result.replace_error(Nil)
       |> result.map(request.set_scheme(req, _))
       |> result.try(make_request(rest, _))
     }
-    // TODO
-    [#("authority", _authority), ..rest] -> make_request(rest, req)
-    [#("path", path), ..rest] -> {
+    [#(":authority", authority), ..rest] -> {
+      req
+      |> request.set_header("host", authority)
+      |> make_request(rest, _)
+    }
+    [#(":path", path), ..rest] -> {
       path
       |> string.split_once(on: "?")
       |> result.map(fn(split) {
@@ -189,6 +201,30 @@ pub fn make_request(
       |> request.set_header(key, value)
       |> make_request(rest, _)
   }
+}
+
+fn parse_host(req: Request(Connection)) -> Result(Request(Connection), Nil) {
+  req
+  |> request.get_header("host")
+  |> result.map(fn(host_header) {
+    let #(hostname, port) =
+      host_header
+      |> string.split_once(":")
+      |> result.unwrap(#(host_header, ""))
+
+    let port = case int.parse(port) {
+      Ok(port) -> port
+      Error(_) ->
+        case req.scheme {
+          ghttp.Https -> 443
+          ghttp.Http -> 80
+        }
+    }
+
+    req
+    |> request.set_host(hostname)
+    |> request.set_port(port)
+  })
 }
 
 pub fn receive_data(state: State, size: Int) -> #(State, Int) {

@@ -15,14 +15,18 @@ import gleam/otp/factory_supervisor as factory
 import gleam/result
 import gleam/set
 import gleam/string
+import gleam/uri
 import glisten
 import glisten/internal/handler as glisten_handler
+import glisten/socket.{type Socket, type SocketReason}
 import glisten/socket/options
 import glisten/tcp
 import glisten/transport.{Tcp}
 import mist
 import mist/internal/handler
 import mist/internal/http.{type Connection} as mhttp
+import mist/internal/http2
+import mist/internal/http2/frame.{type Frame}
 
 pub fn with_server(
   at port: Int,
@@ -212,6 +216,18 @@ pub fn default_handler(
   Response(status: 200, headers: headers, body: mist.Bytes(body))
 }
 
+pub fn uri_echo_handler(
+  req: request.Request(Connection),
+) -> response.Response(mist.ResponseData) {
+  let path =
+    req
+    |> request.to_uri
+    |> uri.to_string
+  let body = http.method_to_string(req.method) <> " " <> path
+  response.new(200)
+  |> response.set_body(mist.Bytes(bytes_tree.from_string(body)))
+}
+
 fn compare_bitstring_body(actual: BitArray, expected: BytesTree) {
   assert bytes_tree.from_bit_array(actual) == expected
 }
@@ -268,6 +284,87 @@ pub fn make_request(path: String, body: body) -> request.Request(body) {
   |> request.set_body(body)
   |> request.set_scheme(http.Http)
 }
+
+pub fn http2_request(headers: List(#(String, String))) -> Response(BitArray) {
+  let assert Ok(socket) =
+    [options.Mode(options.Binary), options.ActiveMode(options.Passive)]
+    |> options.to_erl_options
+    |> gen_tcp_connect(atom.create("localhost"), 8888, _)
+
+  let initial_settings = http2.default_settings()
+  let assert Ok(#(headers, _context)) =
+    http2.hpack_new_context(initial_settings.header_table_size)
+    |> http2.hpack_encode(headers)
+
+  let settings_frame = frame.Settings(ack: False, settings: [])
+  let header_frame =
+    frame.Header(
+      data: frame.Complete(headers),
+      end_stream: True,
+      identifier: frame.stream_identifier(1),
+      priority: option.None,
+    )
+
+  let assert Ok(_nil) =
+    bytes_tree.from_string("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
+    |> tcp.send(socket, _)
+  let assert Ok(_nil) = http2.send_frame(settings_frame, socket, Tcp)
+  let assert #(frame.Settings(..), rest) = receive_frame(socket, <<>>)
+  let assert Ok(_nil) = http2.send_frame(frame.settings_ack(), socket, Tcp)
+  let assert Ok(_nil) = http2.send_frame(header_frame, socket, Tcp)
+  let resp =
+    receive_response(socket, rest, Response(status: 0, headers: [], body: <<>>))
+  let assert Ok(_nil) = tcp.close(socket)
+
+  resp
+}
+
+fn receive_frame(socket: Socket, data: BitArray) -> #(Frame, BitArray) {
+  case frame.decode(data) {
+    Ok(decoded) -> decoded
+    Error(_connection_error) -> {
+      let assert Ok(received) = tcp.receive_timeout(socket, 0, 5000)
+      receive_frame(socket, <<data:bits, received:bits>>)
+    }
+  }
+}
+
+fn receive_response(
+  socket: Socket,
+  data: BitArray,
+  resp: Response(BitArray),
+) -> Response(BitArray) {
+  let #(received, rest) = receive_frame(socket, data)
+  let #(resp, end_stream) = case received {
+    frame.Header(data: frame.Complete(data), end_stream: end_stream, ..) -> {
+      let initial_settings = http2.default_settings()
+      let assert Ok(#(headers, _context)) =
+        http2.hpack_new_context(initial_settings.header_table_size)
+        |> http2.hpack_decode(data)
+      let assert Ok(#(status, headers)) =
+        headers
+        |> list.key_pop(":status")
+      let assert Ok(status) = int.parse(status)
+      #(Response(status: status, headers: headers, body: <<>>), end_stream)
+    }
+    frame.Data(data: data, end_stream: end_stream, ..) -> #(
+      response.set_body(resp, <<resp.body:bits, data:bits>>),
+      end_stream,
+    )
+    _frame -> #(resp, False)
+  }
+  case end_stream {
+    True -> resp
+    False -> receive_response(socket, rest, resp)
+  }
+}
+
+@external(erlang, "gen_tcp", "connect")
+fn gen_tcp_connect(
+  host host: atom.Atom,
+  port port: Int,
+  options options: List(options.ErlangTcpOption),
+) -> Result(Socket, SocketReason)
 
 type IoFormat {
   User
