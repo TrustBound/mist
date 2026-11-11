@@ -465,6 +465,11 @@ fn receive_response(
       context,
       end_stream,
     )
+    frame.Ping(ack: True, data: data) -> #(
+      response.set_body(resp, data),
+      context,
+      True,
+    )
     frame.Termination(identifier: reset, ..) if reset == identifier -> #(
       resp,
       context,

@@ -1,4 +1,6 @@
 import gleam/bytes_tree
+import gleam/erlang/process
+import gleam/http/request
 import gleam/http/response
 import gleam/string
 import mist
@@ -239,4 +241,71 @@ pub fn it_resets_streams_with_invalid_methods_test() {
     )
 
   bitstring_response_should_equal(actual, expected)
+}
+
+pub fn it_responds_to_ping_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, scaffold.uri_echo_handler)
+
+  let actual =
+    scaffold.http2_request_after(
+      <<0, 0, 8, 6, 0, 0, 0, 0, 0, "pingpong":utf8>>,
+      headers,
+    )
+
+  let expected =
+    response.new(0)
+    |> response.set_body(bytes_tree.from_bit_array(<<"pingpong":utf8>>))
+
+  bitstring_response_should_equal(actual, expected)
+}
+
+pub fn it_stops_reset_streams_test() {
+  let slow = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/slow"),
+  ]
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let pids = process.new_subject()
+
+  use <- scaffold.open_server(8888, fn(req) {
+    case request.path_segments(req) {
+      ["slow"] -> {
+        process.send(pids, process.self())
+        process.sleep_forever()
+        scaffold.uri_echo_handler(req)
+      }
+      _ -> scaffold.uri_echo_handler(req)
+    }
+  })
+
+  let assert [_ping, actual] =
+    scaffold.http2_requests([
+      #(<<0, 0, 8, 6, 0, 0, 0, 0, 0, "pingpong":utf8>>, slow, <<>>),
+      #(<<0, 0, 4, 3, 0, 0, 0, 0, 1, 0, 0, 0, 8>>, headers, <<>>),
+    ])
+  let assert Ok(pid) = process.receive(pids, 1000)
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "28")
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<"GET http://example.com:8080/":utf8>>),
+    )
+
+  bitstring_response_should_equal(actual, expected)
+  assert !process.is_alive(pid)
 }

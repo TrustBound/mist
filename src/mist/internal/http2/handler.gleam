@@ -322,6 +322,26 @@ fn handle_frame(
       |> result.replace(state)
       |> result.replace_error("Failed to respond to settings ACK")
     }
+    None, frame.Ping(ack: False, data: data) -> {
+      http2.send_frame(
+        frame.Ping(ack: True, data: data),
+        conn.socket,
+        conn.transport,
+      )
+      |> result.replace(state)
+      |> result.replace_error("Failed to respond to ping")
+    }
+    None, frame.Termination(identifier: identifier, ..) -> {
+      let _ =
+        state.streams
+        |> dict.get(identifier)
+        |> result.try(fn(stream) { process.subject_owner(stream.subject) })
+        |> result.map(fn(pid) {
+          process.unlink(pid)
+          process.kill(pid)
+        })
+      Ok(State(..state, streams: dict.delete(state.streams, identifier)))
+    }
     None, frame.GoAway(..) -> {
       logging.log(logging.Debug, "byteeee~~")
       // TODO:  Normal exit
