@@ -4,6 +4,8 @@
 
 - Read remaining request data before closing so the response is not lost to a
   connection reset
+- Apply HTTP/2 pseudo-headers to the request
+- Respond with HTTP 400 on missing `host` header over HTTP/2
 
 # v6.0.3
 
