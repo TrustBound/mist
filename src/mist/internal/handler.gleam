@@ -69,7 +69,12 @@ pub fn with_func(
           Bytes(bytes) -> {
             resp
             |> response.set_body(bytes)
-            |> http2.send_bytes_tree(conn, state.send_hpack_context, id)
+            |> http2.send_bytes_tree(
+              conn,
+              state.send_hpack_context,
+              id,
+              state.settings.max_frame_size,
+            )
           }
           File(..) -> Error("File sending unsupported over HTTP/2")
           // TODO:  properly error in some fashion for these

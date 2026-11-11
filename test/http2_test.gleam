@@ -1,5 +1,7 @@
 import gleam/bytes_tree
 import gleam/http/response
+import gleam/string
+import mist
 import scaffold.{bitstring_response_should_equal}
 
 pub fn it_applies_pseudo_headers_test() {
@@ -130,6 +132,56 @@ pub fn it_handles_frames_sent_with_the_preface_test() {
     |> response.set_body(
       bytes_tree.from_bit_array(<<"GET http://example.com:8080/":utf8>>),
     )
+
+  bitstring_response_should_equal(actual, expected)
+}
+
+pub fn it_splits_large_bodies_into_frames_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let body = <<string.repeat("a", 60_000):utf8>>
+
+  use <- scaffold.open_server(8888, fn(_req) {
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.from_bit_array(body)))
+  })
+
+  let actual = scaffold.http2_request(headers)
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "60000")
+    |> response.set_body(bytes_tree.from_bit_array(body))
+
+  bitstring_response_should_equal(actual, expected)
+}
+
+pub fn it_splits_large_headers_into_frames_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let value = string.repeat("a", 20_000)
+
+  use <- scaffold.open_server(8888, fn(_req) {
+    response.new(200)
+    |> response.set_header("x-large", value)
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  })
+
+  let actual = scaffold.http2_request(headers)
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("x-large", value)
+    |> response.prepend_header("content-length", "0")
+    |> response.set_body(bytes_tree.from_bit_array(<<>>))
 
   bitstring_response_should_equal(actual, expected)
 }

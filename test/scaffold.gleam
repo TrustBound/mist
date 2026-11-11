@@ -406,11 +406,35 @@ fn send_requests(
 
 fn receive_frame(socket: Socket, data: BitArray) -> #(Frame, BitArray) {
   case frame.decode(data) {
-    Ok(decoded) -> decoded
+    Ok(#(received, rest)) -> {
+      let assert <<length:size(24), _frame:bits>> = data
+      assert length <= http2.default_settings().max_frame_size
+      case received {
+        frame.Header(data: frame.Continued(block), ..) -> {
+          let #(block, rest) = receive_continuation(socket, rest, block)
+          #(frame.Header(..received, data: frame.Complete(block)), rest)
+        }
+        _frame -> #(received, rest)
+      }
+    }
     Error(_connection_error) -> {
       let assert Ok(received) = tcp.receive_timeout(socket, 0, 5000)
       receive_frame(socket, <<data:bits, received:bits>>)
     }
+  }
+}
+
+fn receive_continuation(
+  socket: Socket,
+  data: BitArray,
+  block: BitArray,
+) -> #(BitArray, BitArray) {
+  let assert #(frame.Continuation(data: data, ..), rest) =
+    receive_frame(socket, data)
+  case data {
+    frame.Complete(data) -> #(<<block:bits, data:bits>>, rest)
+    frame.Continued(data) ->
+      receive_continuation(socket, rest, <<block:bits, data:bits>>)
   }
 }
 

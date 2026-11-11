@@ -11,7 +11,7 @@ import logging
 import mist/internal/http.{type Connection}
 import mist/internal/http2/frame.{
   type Frame, type PushState, type Setting, type StreamIdentifier, Complete,
-  Data, Header,
+  Continuation, Continued, Data, Header,
 }
 
 pub type Http2Settings {
@@ -63,18 +63,26 @@ fn send_headers(
   headers: List(Header),
   end_stream: Bool,
   stream_identifier: StreamIdentifier(Frame),
+  max_frame_size: Int,
 ) -> Result(HpackContext, String) {
   hpack_encode(context, headers)
   |> result.try(fn(pair) {
     let #(headers, new_context) = pair
+    let #(data, continuation) = case headers {
+      <<data:bytes-size(max_frame_size), rest:bits>> if rest != <<>> -> #(
+        Continued(data),
+        encode_continuation(rest, stream_identifier, max_frame_size),
+      )
+      _ -> #(Complete(headers), <<>>)
+    }
     let header_frame =
       Header(
-        data: Complete(headers),
+        data: data,
         end_stream: end_stream,
         identifier: stream_identifier,
         priority: None,
       )
-    let encoded = frame.encode(header_frame)
+    let encoded = <<frame.encode(header_frame):bits, continuation:bits>>
     case
       transport.send(
         conn.transport,
@@ -86,6 +94,45 @@ fn send_headers(
       Error(_reason) -> Error("Failed to send HTTP/2 headers")
     }
   })
+}
+
+fn encode_continuation(
+  data: BitArray,
+  stream_identifier: StreamIdentifier(Frame),
+  max_frame_size: Int,
+) -> BitArray {
+  case data {
+    <<data:bytes-size(max_frame_size), rest:bits>> if rest != <<>> -> {
+      let continuation =
+        Continuation(data: Continued(data), identifier: stream_identifier)
+      <<
+        frame.encode(continuation):bits,
+        encode_continuation(rest, stream_identifier, max_frame_size):bits,
+      >>
+    }
+    _ ->
+      frame.encode(Continuation(
+        data: Complete(data),
+        identifier: stream_identifier,
+      ))
+  }
+}
+
+fn send_body(
+  conn: Connection,
+  data: BitArray,
+  stream_identifier: StreamIdentifier(Frame),
+  max_frame_size: Int,
+) -> Result(Nil, String) {
+  case data {
+    <<data:bytes-size(max_frame_size), rest:bits>> if rest != <<>> -> {
+      send_data(conn, data, stream_identifier, False)
+      |> result.try(fn(_nil) {
+        send_body(conn, rest, stream_identifier, max_frame_size)
+      })
+    }
+    _ -> send_data(conn, data, stream_identifier, True)
+  }
 }
 
 fn send_data(
@@ -112,7 +159,6 @@ fn send_data(
   })
 }
 
-// TODO:  handle max frame size
 pub fn send_frame(
   frame_to_send: Frame,
   socket: Socket,
@@ -128,6 +174,7 @@ pub fn send_bytes_tree(
   conn: Connection,
   context: HpackContext,
   id: StreamIdentifier(Frame),
+  max_frame_size: Int,
 ) -> Result(HpackContext, String) {
   let resp =
     resp
@@ -136,13 +183,12 @@ pub fn send_bytes_tree(
   let headers = [#(":status", int.to_string(resp.status)), ..resp.headers]
 
   case bytes_tree.byte_size(resp.body) {
-    0 -> send_headers(context, conn, headers, True, id)
+    0 -> send_headers(context, conn, headers, True, id, max_frame_size)
     _ -> {
-      send_headers(context, conn, headers, False, id)
+      send_headers(context, conn, headers, False, id, max_frame_size)
       |> result.try(fn(context) {
         // TODO:  this should be broken up by window size
-        // TODO:  fix end_stream
-        send_data(conn, bytes_tree.to_bit_array(resp.body), id, True)
+        send_body(conn, bytes_tree.to_bit_array(resp.body), id, max_frame_size)
         |> result.replace(context)
       })
     }
