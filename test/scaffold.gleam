@@ -300,6 +300,13 @@ pub fn make_request(path: String, body: body) -> request.Request(body) {
 }
 
 pub fn http2_request(headers: List(#(String, String))) -> Response(BitArray) {
+  http2_request_after(<<>>, headers)
+}
+
+pub fn http2_request_after(
+  data: BitArray,
+  headers: List(#(String, String)),
+) -> Response(BitArray) {
   let assert Ok(socket) =
     [options.Mode(options.Binary), options.ActiveMode(options.Passive)]
     |> options.to_erl_options
@@ -325,6 +332,7 @@ pub fn http2_request(headers: List(#(String, String))) -> Response(BitArray) {
   let assert Ok(_nil) = http2.send_frame(settings_frame, socket, Tcp)
   let assert #(frame.Settings(..), rest) = receive_frame(socket, <<>>)
   let assert Ok(_nil) = http2.send_frame(frame.settings_ack(), socket, Tcp)
+  let assert Ok(_nil) = tcp.send(socket, bytes_tree.from_bit_array(data))
   let assert Ok(_nil) = http2.send_frame(header_frame, socket, Tcp)
   let resp =
     receive_response(socket, rest, Response(status: 0, headers: [], body: <<>>))

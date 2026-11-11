@@ -40,3 +40,26 @@ pub fn it_rejects_requests_without_host_test() {
 
   bitstring_response_should_equal(actual, expected)
 }
+
+pub fn it_ignores_unknown_frames_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, scaffold.uri_echo_handler)
+
+  let actual =
+    scaffold.http2_request_after(<<0, 0, 1, 255, 0, 0, 0, 0, 1, 0>>, headers)
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "28")
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<"GET http://example.com:8080/":utf8>>),
+    )
+
+  bitstring_response_should_equal(actual, expected)
+}

@@ -82,6 +82,8 @@ pub type Frame {
   WindowUpdate(amount: Int, identifier: StreamIdentifier(Frame))
 
   Continuation(data: Data, identifier: StreamIdentifier(Frame))
+
+  Unknown(frame_type: Int)
 }
 
 pub type ConnectionError {
@@ -124,7 +126,7 @@ pub fn decode(frame: BitArray) -> Result(#(Frame, BitArray), ConnectionError) {
         7 -> parse_go_away(identifier, flags, length, payload)
         8 -> parse_window_update(identifier, flags, length, payload)
         9 -> parse_continuation(identifier, flags, length, payload)
-        _ -> Error(ProtocolError)
+        _ -> Ok(Unknown(frame_type))
       }
       |> result.map(fn(frame) { #(frame, rest) })
     }
@@ -163,7 +165,7 @@ fn parse_data(
       if identifier != 0
     -> {
       let data_length = case padding {
-        1 -> length - pad_length
+        1 -> length - pad_length - 1
         0 -> length
         _ -> panic as "Somehow a bit was neither 0 nor 1"
       }
@@ -367,13 +369,14 @@ fn parse_go_away(
   length: Int,
   payload: BitArray,
 ) -> Result(Frame, ConnectionError) {
+  let data_length = length - 8
   case <<flags:bits, payload:bits>> {
     <<
       _unused:size(8),
       _reserved:size(1),
       last_stream_id:size(31),
       error:size(32),
-      data:bytes-size(length),
+      data:bytes-size(data_length),
     >>
       if identifier == 0
     -> {
@@ -402,8 +405,8 @@ fn parse_window_update(
         identifier: stream_identifier(identifier),
       ))
     }
-    4, _ -> Error(FrameSizeError)
-    _, _ -> Error(ProtocolError)
+    4, _ -> Error(ProtocolError)
+    _, _ -> Error(FrameSizeError)
   }
 }
 
@@ -482,7 +485,7 @@ pub fn encode(frame: Frame) -> BitArray {
       let exclusive = from_bool(exclusive)
       <<
         5:size(24),
-        2:size(2),
+        2:size(8),
         0:size(8),
         0:size(1),
         identifier:size(31),
@@ -539,7 +542,7 @@ pub fn encode(frame: Frame) -> BitArray {
     Ping(ack, data) -> {
       let ack = from_bool(ack)
       <<
-        0:size(24),
+        8:size(24),
         6:size(8),
         0:size(7),
         ack:size(1),
@@ -550,7 +553,7 @@ pub fn encode(frame: Frame) -> BitArray {
     }
     GoAway(data, error, StreamIdentifier(last_stream_id)) -> {
       let error = encode_error(error)
-      let payload_size = bit_array.byte_size(data)
+      let payload_size = bit_array.byte_size(data) + 8
       <<
         payload_size:size(24),
         7:size(8),
@@ -588,6 +591,7 @@ pub fn encode(frame: Frame) -> BitArray {
         data:bits,
       >>
     }
+    Unknown(..) -> panic as "Cannot encode an unknown frame"
   }
 }
 
