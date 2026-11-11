@@ -330,14 +330,13 @@ pub fn http2_requests(
   let initial_settings = http2.default_settings()
   let context = http2.hpack_new_context(initial_settings.header_table_size)
   let settings_frame = frame.Settings(ack: False, settings: [])
+  let preface = <<
+    "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n":utf8,
+    frame.encode(settings_frame):bits,
+  >>
 
-  let assert Ok(_nil) =
-    bytes_tree.from_string("PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n")
-    |> tcp.send(socket, _)
-  let assert Ok(_nil) = http2.send_frame(settings_frame, socket, Tcp)
-  let assert #(frame.Settings(..), rest) = receive_frame(socket, <<>>)
-  let assert Ok(_nil) = http2.send_frame(frame.settings_ack(), socket, Tcp)
-  let responses = send_requests(socket, requests, 1, context, context, rest)
+  let responses =
+    send_requests(socket, requests, preface, 1, context, context, <<>>)
   let assert Ok(_nil) = tcp.close(socket)
 
   responses
@@ -346,6 +345,7 @@ pub fn http2_requests(
 fn send_requests(
   socket: Socket,
   requests: List(#(BitArray, List(#(String, String)), BitArray)),
+  preface: BitArray,
   identifier: Int,
   encode_context: http2.HpackContext,
   decode_context: http2.HpackContext,
@@ -364,18 +364,22 @@ fn send_requests(
           priority: option.None,
         )
 
-      let assert Ok(_nil) = tcp.send(socket, bytes_tree.from_bit_array(data))
-      let assert Ok(_nil) = http2.send_frame(header_frame, socket, Tcp)
-      let assert Ok(_nil) = case body {
-        <<>> -> Ok(Nil)
+      let body_frame = case body {
+        <<>> -> <<>>
         _ ->
           frame.Data(
             data: body,
             end_stream: True,
             identifier: frame.stream_identifier(identifier),
           )
-          |> http2.send_frame(socket, Tcp)
+          |> frame.encode
       }
+
+      let assert Ok(_nil) =
+        <<preface:bits, data:bits, frame.encode(header_frame):bits>>
+        |> bit_array.append(body_frame)
+        |> bytes_tree.from_bit_array
+        |> tcp.send(socket, _)
       let #(resp, decode_context, rest) =
         receive_response(
           socket,
@@ -389,6 +393,7 @@ fn send_requests(
         ..send_requests(
           socket,
           requests,
+          <<>>,
           identifier + 2,
           encode_context,
           decode_context,

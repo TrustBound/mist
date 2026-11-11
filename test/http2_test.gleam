@@ -111,3 +111,25 @@ pub fn it_ignores_window_updates_on_closed_streams_test() {
 
   bitstring_response_should_equal(actual, expected)
 }
+
+pub fn it_handles_frames_sent_with_the_preface_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, scaffold.uri_echo_handler)
+
+  let actual = scaffold.http2_request(headers)
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "28")
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<"GET http://example.com:8080/":utf8>>),
+    )
+
+  bitstring_response_should_equal(actual, expected)
+}

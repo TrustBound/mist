@@ -8,6 +8,7 @@
 - Respond with HTTP 400 on missing `host` header over HTTP/2
 - Fix encoding and decoding of some HTTP/2 frames and ignore unknown frames
 - Fix HTTP/2 responses to requests with a body and stop stream processes
+- Handle HTTP/2 frames received with the client preface
 
 # v6.0.3
 

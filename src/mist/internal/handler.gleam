@@ -155,8 +155,11 @@ pub fn with_func(
               })
             http.Upgrade(data) ->
               http2_handler.upgrade(data, conn, self)
-              |> result.map(Http2)
               |> result.map_error(Error)
+              |> result.try(fn(state) {
+                http2_handler.call(state, conn, handler)
+              })
+              |> result.map(Http2)
           }
         })
       }
