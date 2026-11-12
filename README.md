@@ -1,3 +1,37 @@
+# dream_http_server
+
+> **This is a fork of [mist](https://github.com/rawhat/mist), published by the [Dream](https://github.com/TrustBound/dream) project. If you are not using Dream, use mist.**
+>
+> The package is named for what it does, an HTTP server, so that it does not appear when people search Hex for mist.
+
+## Why this package exists
+
+mist is the web server that Dream runs on. It is written by Alex Manning (rawhat) and its contributors, and it has given a great deal to us and to the rest of the Gleam community. This package is not a replacement for it and not a judgement of it.
+
+We publish this fork for four reasons.
+
+1. **Dream needed many fixes, not one.** HTTP/2 in mist 6.0.3 was not finished. Requests with a body got no response, every request left a process behind, large responses stalled, and several kinds of client input closed or crashed the whole connection. Making HTTP/2 correct for Dream took 47 changes. They are summarised under "Unreleased" in [CHANGELOG.md](CHANGELOG.md), and each one is its own commit on the branch `http2-review-fixes`.
+2. **Giving that many changes back takes a long time.** Each change has to go upstream as its own small pull request, in the maintainer's style, and be reviewed and released on the maintainer's schedule. That is the right way to do it, and it cannot be hurried. We intend to send every one of them.
+3. **Dream could not wait any longer.** This version of Dream has already been delayed too long, and its users need the fixes now.
+4. **Hex and Gleam leave no other way to ship a fixed dependency.** A Hex package may depend only on other Hex packages, so Dream cannot depend on a git fork or a local path. A Gleam package is built only from the real files in its own `src/` folder, so Dream cannot use a git submodule as its source either: we tested it, and the published package comes out with the files in the wrong place. The choices left were to copy mist's source into Dream, or to publish the fork as its own package. Publishing the fork keeps mist's code, history and licence in one place, apart from Dream's.
+
+## What you need to know before you use it
+
+- **This package defines the same modules as mist** (`mist`, `mist/internal/...`). A project cannot depend on both `mist` and `dream_http_server`. Gleam stops the build with a duplicate module error.
+- **The code is mist 6.0.3 plus our fixes, and nothing else.** We do not rename, reformat or restyle mist's source. What is published here is what we send upstream.
+- **It is temporary.** When a mist release contains the fixes, Dream goes back to `mist`, and this package gets a final release that says so.
+- **Report problems with this package to [TrustBound/mist](https://github.com/TrustBound/mist/issues), not to the mist maintainers.** They did not publish it and do not support it.
+
+## Licence and credit
+
+mist is licensed under Apache-2.0, and so is this fork. The copyright stays with Alex Manning and the mist contributors. Our changes are offered under the same licence.
+
+---
+
+*The original mist README follows.*
+
+---
+
 # mist
 
 [![Package Version](https://img.shields.io/hexpm/v/mist)](https://hex.pm/packages/mist)

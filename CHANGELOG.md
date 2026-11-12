@@ -1,5 +1,10 @@
 # Changelog
 
+# dream_http_server 1.0.0
+
+First release of the dream_http_server fork: mist 6.0.3 plus the HTTP/2
+fixes listed under "Unreleased" below.
+
 # Unreleased
 
 - Read remaining request data before closing so the response is not lost to a

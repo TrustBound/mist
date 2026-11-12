@@ -1,9 +1,9 @@
-name = "mist"
-version = "6.0.3"
+name = "dream_http_server"
+version = "1.0.0"
 
 licences = ["Apache-2.0"]
-description = "a misty Gleam web server"
-repository = { type = "github", user = "rawhat", repo = "mist" }
+description = "A temporary fork of mist for Dream: mist 6.0.3 plus HTTP/2 fixes. If you are not using Dream, use mist."
+repository = { type = "github", user = "TrustBound", repo = "mist" }
 target = "erlang"
 gleam = ">= 1.11.0"
 
@@ -16,7 +16,7 @@ gleam_http = ">= 4.0.0 and < 5.0.0"
 gleam_stdlib = ">= 1.0.0 and < 2.0.0"
 hpack_erl = ">= 0.3.0 and < 1.0.0"
 logging = ">= 1.0.0 and < 2.0.0"
-glisten = ">= 9.0.0 and < 10.0.0"
+dream_socket_server = ">= 1.0.0 and < 2.0.0"
 exception = ">= 2.1.0 and < 3.0.0"
 gramps = ">= 6.0.0 and < 7.0.0"
 gleam_otp = ">= 1.2.0 and < 2.0.0"
