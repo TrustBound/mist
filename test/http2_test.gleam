@@ -1,5 +1,7 @@
+import gleam/bit_array
 import gleam/bytes_tree
 import gleam/erlang/process
+import gleam/http
 import gleam/http/request
 import gleam/http/response
 import gleam/int
@@ -1291,6 +1293,148 @@ pub fn it_resets_data_on_half_closed_streams_test() {
       frame.Termination(
         error: frame.StreamClosed,
         identifier: frame.stream_identifier(1),
+      ),
+    ]
+}
+
+fn post_headers(identifier: Int) -> frame.Frame {
+  frame.Header(
+    data: frame.Complete(<<
+      0, 7, ":method":utf8, 4, "POST":utf8, 0, 5, ":path":utf8, 1, "/":utf8, 0,
+      7, ":scheme":utf8, 4, "http":utf8, 0, 10, ":authority":utf8, 16,
+      "example.com:8080":utf8,
+    >>),
+    end_stream: False,
+    identifier: frame.stream_identifier(identifier),
+    priority: option.None,
+  )
+}
+
+fn stream_window_updates(
+  frames: List(frame.Frame),
+  identifier: Int,
+) -> List(Int) {
+  let identifier = frame.stream_identifier(identifier)
+  list.filter_map(frames, fn(received) {
+    case received {
+      frame.WindowUpdate(amount: amount, identifier: stream)
+        if stream == identifier
+      -> Ok(amount)
+      _frame -> Error(Nil)
+    }
+  })
+}
+
+pub fn it_grants_the_stream_window_as_the_body_is_read_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let started = process.new_subject()
+  let read = process.new_subject()
+
+  use <- scaffold.open_server(8888, fn(req) {
+    case req.method {
+      http.Post -> {
+        let reading = process.new_subject()
+        process.send(started, reading)
+        process.receive_forever(reading)
+        process.send(read, mist.read_body(req, 32_768))
+      }
+      _method -> Nil
+    }
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  scaffold.http2_send(socket, post_headers(3))
+  let assert Ok(reading) = process.receive(started, 1000)
+  list.each([<<0:size(131_072)>>, <<0:size(131_072)>>, <<0>>], fn(data) {
+    scaffold.http2_send(
+      socket,
+      frame.Data(
+        data: data,
+        end_stream: False,
+        identifier: frame.stream_identifier(3),
+      ),
+    )
+  })
+  let unread = stream_window_updates(scaffold.http2_receive(socket), 3)
+  process.send(reading, Nil)
+  let assert Ok(Error(mist.ExcessBody)) = process.receive(read, 1000)
+  let consumed = stream_window_updates(scaffold.http2_receive(socket), 3)
+
+  assert unread == []
+  assert consumed == [32_768]
+}
+
+pub fn it_reads_bodies_larger_than_the_stream_window_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let read = process.new_subject()
+
+  use <- scaffold.open_server(8888, fn(req) {
+    let assert Ok(req) = mist.read_body(req, 1_000_000)
+    process.send(read, bit_array.byte_size(req.body))
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  let assert Ok(0) = process.receive(read, 1000)
+  scaffold.http2_send(socket, post_headers(3))
+  scaffold.http2_send_body(socket, 3, <<0:size(1_600_000)>>)
+
+  assert process.receive(read, 1000) == Ok(200_000)
+}
+
+pub fn it_resets_streams_that_exceed_the_receive_window_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, fn(_req) {
+    process.sleep_forever()
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  scaffold.http2_send(socket, post_headers(3))
+  list.each([1, 2, 3, 4], fn(_frame) {
+    scaffold.http2_send(
+      socket,
+      frame.Data(
+        data: <<0:size(131_072)>>,
+        end_stream: False,
+        identifier: frame.stream_identifier(3),
+      ),
+    )
+  })
+  let received =
+    scaffold.http2_receive(socket)
+    |> list.filter(fn(received) {
+      case received {
+        frame.Termination(..) -> True
+        _frame -> False
+      }
+    })
+
+  assert received
+    == [
+      frame.Termination(
+        error: frame.FlowControlError,
+        identifier: frame.stream_identifier(3),
       ),
     ]
 }

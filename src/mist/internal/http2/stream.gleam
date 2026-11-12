@@ -17,7 +17,6 @@ import mist/internal/http.{
   type Connection, type Handler, type ResponseData, Bytes, Connection, File,
   Stream,
 }
-import mist/internal/http2/flow_control
 import mist/internal/http2/frame.{type Frame, type StreamIdentifier}
 
 pub type Message {
@@ -38,6 +37,7 @@ pub type SendMessage {
     data: BitArray,
     sent: Subject(Result(Nil, Nil)),
   )
+  ConsumeData(identifier: StreamIdentifier(Frame), size: Int)
 }
 
 pub type StreamState {
@@ -53,6 +53,7 @@ pub type State {
     state: StreamState,
     subject: Subject(Message),
     receive_window_size: Int,
+    consumed_size: Int,
     send_window_size: Int,
     pending_content_length: Option(Int),
     headers_sent: Bool,
@@ -109,6 +110,9 @@ pub fn new(
                   True -> send_data(sender, identifier, data, send_timeout)
                   False -> Error(Nil)
                 }
+              },
+              consume_data: fn(size) {
+                process.send(sender, ConsumeData(identifier, size))
               },
             ),
           )
@@ -299,18 +303,12 @@ fn parse_host(req: Request(Connection)) -> Result(Request(Connection), Nil) {
   })
 }
 
-pub fn receive_data(state: State, size: Int) -> #(State, Int) {
-  let #(new_window_size, increment) =
-    flow_control.compute_receive_window(state.receive_window_size, size)
-
-  let new_state =
-    State(
-      ..state,
-      receive_window_size: new_window_size,
-      pending_content_length: option.map(state.pending_content_length, fn(val) {
-        val - size
-      }),
-    )
-
-  #(new_state, increment)
+pub fn receive_data(state: State, size: Int) -> State {
+  State(
+    ..state,
+    receive_window_size: state.receive_window_size - size,
+    pending_content_length: option.map(state.pending_content_length, fn(val) {
+      val - size
+    }),
+  )
 }

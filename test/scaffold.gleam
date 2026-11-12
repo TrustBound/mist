@@ -397,6 +397,50 @@ pub fn http2_receive(socket: Socket) -> List(Frame) {
   receive_until_ping(socket, <<>>)
 }
 
+pub fn http2_send_body(socket: Socket, identifier: Int, body: BitArray) -> Nil {
+  send_body(socket, frame.stream_identifier(identifier), body, 65_535, <<>>)
+}
+
+fn send_body(
+  socket: Socket,
+  identifier: frame.StreamIdentifier(Frame),
+  body: BitArray,
+  window: Int,
+  data: BitArray,
+) -> Nil {
+  let size =
+    body
+    |> bit_array.byte_size
+    |> int.min(window)
+    |> int.min(http2.default_settings().max_frame_size)
+  case body, size {
+    <<>>, _size -> Nil
+    _body, 0 -> {
+      let #(received, rest) = receive_frame(socket, data)
+      let window = case received {
+        frame.WindowUpdate(amount: amount, identifier: stream)
+          if stream == identifier
+        -> window + amount
+        _frame -> window
+      }
+      assert window <= 65_535
+      send_body(socket, identifier, body, window, rest)
+    }
+    _body, _size -> {
+      let assert <<chunk:bytes-size(size), rest:bytes>> = body
+      http2_send(
+        socket,
+        frame.Data(
+          data: chunk,
+          end_stream: rest == <<>>,
+          identifier: identifier,
+        ),
+      )
+      send_body(socket, identifier, rest, window - size, data)
+    }
+  }
+}
+
 fn receive_until_ping(socket: Socket, data: BitArray) -> List(Frame) {
   case receive_frame(socket, data) {
     #(frame.Ping(ack: True, ..), _rest) -> []

@@ -392,6 +392,7 @@ pub type Body {
     attempts: Int,
     send_headers: fn(Int, List(http.Header)) -> Nil,
     send_data: fn(BitArray) -> Result(Nil, Nil),
+    consume_data: fn(Int) -> Nil,
   )
 }
 
@@ -448,6 +449,7 @@ pub fn read_body(
         attempts: attempts,
         send_headers: send_headers,
         send_data: send_data,
+        consume_data: consume_data,
       )
     -> {
       let res =
@@ -458,7 +460,8 @@ pub fn read_body(
       let new_data = <<data:bits, next:bits>>
       case bit_array.byte_size(new_data) > max_body_limit {
         True -> Error(ExcessBody)
-        False ->
+        False -> {
+          consume_data(bit_array.byte_size(next))
           read_body(
             request.set_body(
               req,
@@ -471,11 +474,13 @@ pub fn read_body(
                   attempts + 1,
                   send_headers,
                   send_data,
+                  consume_data,
                 ),
               ),
             ),
             max_body_limit,
           )
+        }
       }
     }
     _, Stream(data: data, ..) -> {

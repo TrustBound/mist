@@ -20,7 +20,7 @@ import mist/internal/http2
 import mist/internal/http2/frame
 import mist/internal/http2/handler as http2_handler
 import mist/internal/http2/stream.{
-  type SendMessage, Reset, Send, SendData, SendHeaders,
+  type SendMessage, ConsumeData, Reset, Send, SendData, SendHeaders,
 }
 
 pub type HandlerError {
@@ -157,6 +157,12 @@ pub fn with_send_timeout(
       User(SendData(id, data, sent)), Http2(state) -> {
         state
         |> http2_handler.send_data_reply(conn, id, data, sent)
+        |> result.map(Http2)
+        |> result.map_error(Error)
+      }
+      User(ConsumeData(id, size)), Http2(state) -> {
+        state
+        |> http2_handler.consume_data(conn, id, size)
         |> result.map(Http2)
         |> result.map_error(Error)
       }

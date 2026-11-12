@@ -225,6 +225,42 @@ fn send_frames(
   }
 }
 
+const window_update_threshold = 32_768
+
+pub fn consume_data(
+  state: State,
+  conn: Connection,
+  id: StreamIdentifier(Frame),
+  size: Int,
+) -> Result(State, String) {
+  case dict.get(state.streams, id) {
+    Ok(stream.State(state: stream.RemoteClosed, ..)) | Error(_nil) -> Ok(state)
+    Ok(stream) -> {
+      let consumed = stream.consumed_size + size
+      case consumed >= window_update_threshold {
+        True -> {
+          let stream =
+            stream.State(
+              ..stream,
+              receive_window_size: stream.receive_window_size + consumed,
+              consumed_size: 0,
+            )
+          frame.WindowUpdate(identifier: id, amount: consumed)
+          |> http2.send_frame(conn.socket, conn.transport)
+          |> result.replace(
+            State(..state, streams: dict.insert(state.streams, id, stream)),
+          )
+          |> result.replace_error("Failed to send window update")
+        }
+        False -> {
+          let stream = stream.State(..stream, consumed_size: consumed)
+          Ok(State(..state, streams: dict.insert(state.streams, id, stream)))
+        }
+      }
+    }
+  }
+}
+
 fn do_pending_sends(state: State, conn: Connection) -> Result(State, String) {
   state.pending_sends
   |> list.reverse
@@ -392,6 +428,20 @@ fn check_content_length(
   }
 }
 
+fn check_receive_window(
+  state: State,
+  conn: Connection,
+  identifier: StreamIdentifier(Frame),
+  size: Int,
+  next: fn() -> Result(State, String),
+) -> Result(State, String) {
+  case dict.get(state.streams, identifier) {
+    Ok(stream) if size > stream.receive_window_size ->
+      reset_stream(state, conn, identifier, frame.FlowControlError)
+    _ -> next()
+  }
+}
+
 fn check_empty_body(
   state: State,
   conn: Connection,
@@ -551,6 +601,7 @@ fn handle_frame(
           },
           subject: new_stream.data,
           receive_window_size: 65_535,
+          consumed_size: 0,
           send_window_size: state.settings.initial_window_size,
           pending_content_length: pending_content_length,
           headers_sent: False,
@@ -594,21 +645,16 @@ fn handle_frame(
         data_size,
         end_stream,
       )
+      use <- check_receive_window(
+        State(..state, receive_window_size: conn_receive_window_size),
+        conn,
+        identifier,
+        data_size,
+      )
       state.streams
       |> dict.get(identifier)
       |> result.map(stream.receive_data(_, data_size))
-      |> result.map(fn(update) {
-        let #(new_stream, increment) = update
-        let _ = case increment > 0 && !end_stream {
-          True -> {
-            http2.send_frame(
-              frame.WindowUpdate(identifier: identifier, amount: increment),
-              conn.socket,
-              conn.transport,
-            )
-          }
-          False -> Ok(Nil)
-        }
+      |> result.map(fn(new_stream) {
         process.send(
           new_stream.subject,
           stream.Data(bits: data, end: end_stream),
