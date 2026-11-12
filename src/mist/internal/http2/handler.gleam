@@ -291,7 +291,10 @@ pub fn upgrade(
   send_timeout: Int,
 ) -> Result(State, String) {
   let initial_settings = http2.default_settings()
-  let settings_frame = frame.Settings(ack: False, settings: [])
+  let settings_frame =
+    frame.Settings(ack: False, settings: [
+      frame.MaxConcurrentStreams(initial_settings.max_concurrent_streams),
+    ])
 
   let sent =
     http2.send_frame(settings_frame, conn.socket, conn.transport)
@@ -446,6 +449,19 @@ fn check_receive_window(
   }
 }
 
+fn check_concurrent_streams(
+  state: State,
+  conn: Connection,
+  identifier: StreamIdentifier(Frame),
+  next: fn() -> Result(State, String),
+) -> Result(State, String) {
+  let max_streams = http2.default_settings().max_concurrent_streams
+  case dict.size(state.streams) >= max_streams {
+    True -> reset_stream(state, conn, identifier, frame.RefusedStream)
+    False -> next()
+  }
+}
+
 fn check_empty_body(
   state: State,
   conn: Connection,
@@ -574,6 +590,15 @@ fn handle_frame(
         |> result.try(int.parse)
         |> option.from_result
 
+      use <- check_concurrent_streams(
+        State(
+          ..state,
+          last_stream_id: identifier,
+          receive_hpack_context: context,
+        ),
+        conn,
+        identifier,
+      )
       use <- check_empty_body(
         State(
           ..state,

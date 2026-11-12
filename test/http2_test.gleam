@@ -1589,3 +1589,60 @@ pub fn it_counts_padding_against_the_receive_window_test() {
       ),
     ]
 }
+
+fn release_handler(release: process.Subject(Nil)) -> Nil {
+  let assert Ok(handler) = process.subject_owner(release)
+  let monitor = process.monitor(handler)
+  process.send(release, Nil)
+  let assert Ok(Nil) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+    |> process.selector_receive(1000)
+  Nil
+}
+
+pub fn it_refuses_streams_over_the_concurrent_stream_limit_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let started = process.new_subject()
+
+  use <- scaffold.open_server(8888, fn(_req) {
+    let release = process.new_subject()
+    process.send(started, release)
+    process.receive_forever(release)
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  let assert Ok(first) = process.receive(started, 1000)
+  int.range(from: 1, to: 100, with: Nil, run: fn(_nil, n) {
+    scaffold.http2_send(socket, post_headers(n * 2 + 1))
+  })
+  list.each(list.repeat(Nil, 99), fn(_nil) {
+    let assert Ok(_release) = process.receive(started, 1000)
+  })
+  scaffold.http2_send(socket, post_headers(201))
+  let refused = stream_frames(scaffold.http2_receive(socket), 201)
+  release_handler(first)
+  scaffold.http2_send(socket, post_headers(203))
+  let assert Ok(last) = process.receive(started, 1000)
+  release_handler(last)
+  let accepted = stream_frames(scaffold.http2_receive(socket), 203)
+
+  assert refused
+    == [
+      frame.Termination(
+        error: frame.RefusedStream,
+        identifier: frame.stream_identifier(201),
+      ),
+    ]
+  let assert [
+    frame.Header(end_stream: True, ..),
+    frame.Termination(error: frame.NoError, ..),
+  ] = accepted
+}

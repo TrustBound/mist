@@ -39,6 +39,7 @@
 - Grant the HTTP/2 stream receive window as the request body is read
 - Reset HTTP/2 streams answered before the request body ended
 - Count HTTP/2 `Data` frame padding against the flow control windows
+- Advertise and enforce the HTTP/2 limit of 100 concurrent streams
 
 # v6.0.3
 
