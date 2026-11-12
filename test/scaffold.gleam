@@ -392,6 +392,29 @@ pub fn http2_send(socket: Socket, frame: Frame) -> Nil {
   Nil
 }
 
+pub fn http2_send_padded(
+  socket: Socket,
+  identifier: Int,
+  data: BitArray,
+  padding: Int,
+) -> Nil {
+  let length = bit_array.byte_size(data) + padding + 1
+  let padding_size = padding * 8
+  let assert Ok(_nil) =
+    <<
+      length:size(24),
+      0,
+      8,
+      identifier:size(32),
+      padding,
+      data:bits,
+      0:size(padding_size),
+    >>
+    |> bytes_tree.from_bit_array
+    |> tcp.send(socket, _)
+  Nil
+}
+
 pub fn http2_receive(socket: Socket) -> List(Frame) {
   http2_send(socket, frame.Ping(ack: False, data: <<0:64>>))
   receive_until_ping(socket, <<>>)

@@ -302,10 +302,10 @@ fn parse_host(req: Request(Connection)) -> Result(Request(Connection), Nil) {
   })
 }
 
-pub fn receive_data(state: State, size: Int) -> State {
+pub fn receive_data(state: State, length: Int, size: Int) -> State {
   State(
     ..state,
-    receive_window_size: state.receive_window_size - size,
+    receive_window_size: state.receive_window_size - length,
     pending_content_length: option.map(state.pending_content_length, fn(val) {
       val - size
     }),

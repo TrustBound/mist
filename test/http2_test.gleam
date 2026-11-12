@@ -1508,3 +1508,84 @@ pub fn it_closes_streams_answered_before_the_body_ends_test() {
     )
   let assert [frame.Header(end_stream: True, ..)] = next
 }
+
+pub fn it_grants_the_stream_window_for_padding_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let read = process.new_subject()
+
+  use <- scaffold.open_server(8888, fn(req) {
+    case req.method {
+      http.Post -> process.send(read, mist.read_body(req, 32_256))
+      _method -> Nil
+    }
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  scaffold.http2_send(socket, post_headers(3))
+  scaffold.http2_send_padded(socket, 3, <<0:size(129_024)>>, 255)
+  scaffold.http2_send_padded(socket, 3, <<0:size(129_024)>>, 255)
+  scaffold.http2_send(
+    socket,
+    frame.Data(
+      data: <<0>>,
+      end_stream: False,
+      identifier: frame.stream_identifier(3),
+    ),
+  )
+  let assert Ok(Error(mist.ExcessBody)) = process.receive(read, 1000)
+  let updates = stream_window_updates(scaffold.http2_receive(socket), 3)
+
+  assert updates == [32_768]
+}
+
+pub fn it_counts_padding_against_the_receive_window_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, fn(_req) {
+    process.sleep_forever()
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  scaffold.http2_send(socket, post_headers(3))
+  list.each([1, 2, 3, 4], fn(_frame) {
+    scaffold.http2_send(
+      socket,
+      frame.Data(
+        data: <<0:size(131_064)>>,
+        end_stream: False,
+        identifier: frame.stream_identifier(3),
+      ),
+    )
+  })
+  scaffold.http2_send_padded(socket, 3, <<0>>, 2)
+  let received =
+    scaffold.http2_receive(socket)
+    |> list.filter(fn(received) {
+      case received {
+        frame.Termination(..) -> True
+        _frame -> False
+      }
+    })
+
+  assert received
+    == [
+      frame.Termination(
+        error: frame.FlowControlError,
+        identifier: frame.stream_identifier(3),
+      ),
+    ]
+}

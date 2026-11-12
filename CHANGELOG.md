@@ -38,6 +38,7 @@
 - Reset HTTP/2 streams that receive data after the client ended them
 - Grant the HTTP/2 stream receive window as the request body is read
 - Reset HTTP/2 streams answered before the request body ended
+- Count HTTP/2 `Data` frame padding against the flow control windows
 
 # v6.0.3
 

@@ -327,7 +327,11 @@ pub fn call(
     Ok(#(frame.GoAway(..), _rest)) -> Error(Ok(Nil))
     Ok(#(frame, rest)) -> {
       let new_state = State(..state, frame_buffer: buffer.new(rest))
-      case handle_frame(frame, new_state, conn, handler) {
+      let length =
+        bit_array.byte_size(state.frame_buffer.data)
+        - bit_array.byte_size(rest)
+        - 9
+      case handle_frame(frame, length, new_state, conn, handler) {
         Ok(updated) -> call(updated, conn, handler)
         Error(reason) -> Error(Error(reason))
       }
@@ -459,6 +463,7 @@ fn check_empty_body(
 
 fn handle_frame(
   frame: Frame,
+  length: Int,
   state: State,
   conn: Connection,
   handler: Handler,
@@ -483,6 +488,7 @@ fn handle_frame(
         )
       handle_frame(
         complete_frame,
+        length,
         State(..state, fragment: None),
         conn,
         handler,
@@ -620,10 +626,7 @@ fn handle_frame(
     -> {
       let data_size = bit_array.byte_size(data)
       let #(conn_receive_window_size, conn_window_increment) =
-        flow_control.compute_receive_window(
-          state.receive_window_size,
-          data_size,
-        )
+        flow_control.compute_receive_window(state.receive_window_size, length)
       let _ = case conn_window_increment > 0 {
         True -> {
           http2.send_frame(
@@ -649,11 +652,11 @@ fn handle_frame(
         State(..state, receive_window_size: conn_receive_window_size),
         conn,
         identifier,
-        data_size,
+        length,
       )
       state.streams
       |> dict.get(identifier)
-      |> result.map(stream.receive_data(_, data_size))
+      |> result.map(stream.receive_data(_, length, data_size))
       |> result.map(fn(new_stream) {
         process.send(
           new_stream.subject,
@@ -678,6 +681,7 @@ fn handle_frame(
         State(..state, receive_window_size: conn_receive_window_size)
         |> reset_stream(conn, identifier, frame.StreamClosed)
       })
+      |> result.try(consume_data(_, conn, identifier, length - data_size))
     }
     None, frame.Priority(..) -> {
       Ok(state)
