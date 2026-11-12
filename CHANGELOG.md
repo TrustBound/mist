@@ -35,6 +35,7 @@
 - Limit the size of HTTP/2 header blocks to 64 KiB
 - Reset HTTP/2 streams whose body does not match `content-length`
 - Reset HTTP/2 requests that declare `content-length` but have no body
+- Reset HTTP/2 streams that receive data after the client ended them
 
 # v6.0.3
 

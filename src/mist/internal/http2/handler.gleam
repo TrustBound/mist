@@ -383,6 +383,8 @@ fn check_content_length(
   next: fn() -> Result(State, String),
 ) -> Result(State, String) {
   case dict.get(state.streams, identifier), end_stream {
+    Ok(stream.State(state: stream.RemoteClosed, ..)), _ ->
+      reset_stream(state, conn, identifier, frame.StreamClosed)
     Ok(stream.State(pending_content_length: Some(remaining), ..)), True
       if remaining != size
     -> reset_stream(state, conn, identifier, frame.ProtocolError)

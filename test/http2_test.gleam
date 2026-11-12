@@ -1250,3 +1250,47 @@ pub fn it_counts_streams_reset_for_content_length_without_a_body_test() {
   assert reset.status == 0
   bitstring_response_should_equal(actual, expected)
 }
+
+pub fn it_resets_data_on_half_closed_streams_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let started = process.new_subject()
+
+  use <- scaffold.open_server(8888, fn(_req) {
+    process.send(started, Nil)
+    process.sleep_forever()
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  let assert Ok(Nil) = process.receive(started, 1000)
+  scaffold.http2_send(
+    socket,
+    frame.Data(
+      data: <<"012":utf8>>,
+      end_stream: False,
+      identifier: frame.stream_identifier(1),
+    ),
+  )
+  let received =
+    scaffold.http2_receive(socket)
+    |> list.filter(fn(received) {
+      case received {
+        frame.Termination(..) -> True
+        _frame -> False
+      }
+    })
+
+  assert received
+    == [
+      frame.Termination(
+        error: frame.StreamClosed,
+        identifier: frame.stream_identifier(1),
+      ),
+    ]
+}
