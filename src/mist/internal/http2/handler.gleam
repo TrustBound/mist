@@ -407,7 +407,7 @@ fn handle_frame(
       |> result.map(stream.receive_data(_, data_size))
       |> result.map(fn(update) {
         let #(new_stream, increment) = update
-        let _ = case increment > 0 {
+        let _ = case increment > 0 && !end_stream {
           True -> {
             http2.send_frame(
               frame.WindowUpdate(identifier: identifier, amount: increment),
