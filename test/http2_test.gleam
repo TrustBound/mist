@@ -970,6 +970,28 @@ pub fn it_cancels_sends_that_time_out_test() {
     ]
 }
 
+pub fn it_times_out_sends_after_the_send_timeout_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let events = process.new_subject()
+
+  use <- scaffold.start_server(
+    mist.new(chunk_events_handler(events))
+    |> mist.port(8888)
+    |> mist.with_send_timeout(100),
+  )
+
+  let _socket = scaffold.http2_open([frame.InitialWindowSize(0)], headers)
+  let assert Ok("sending") = process.receive(events, 1000)
+  let sent = process.receive(events, 1000)
+
+  assert sent == Ok("failed")
+}
+
 pub fn it_sends_go_away_on_reused_stream_ids_test() {
   let headers = [
     #(":method", "GET"),

@@ -42,6 +42,7 @@
 - Advertise and enforce the HTTP/2 limit of 100 concurrent streams
 - Wait up to 15 seconds for each part of an HTTP/2 request body
 - Add `with_read_timeout` to set how long to wait for request data
+- Add `with_send_timeout` to set how long to wait for HTTP/2 data to be sent
 
 # v6.0.3
 

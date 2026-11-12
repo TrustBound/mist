@@ -452,6 +452,7 @@ pub opaque type Builder(request_body, response_body) {
     ipv6_support: Bool,
     tls_options: Option(TlsOptions),
     read_timeout: Int,
+    send_timeout: Int,
   )
 }
 
@@ -479,6 +480,7 @@ pub fn new(handler: fn(Request(in)) -> Response(out)) -> Builder(in, out) {
     },
     tls_options: None,
     read_timeout: 15_000,
+    send_timeout: 30_000,
   )
 }
 
@@ -558,6 +560,16 @@ pub fn with_read_timeout(
   Builder(..builder, read_timeout: timeout)
 }
 
+/// Set how long, in milliseconds, to wait for the client to accept more data
+/// from an HTTP/2 `chunked` or `server_sent_events` response. The default is
+/// 30 seconds.
+pub fn with_send_timeout(
+  builder: Builder(in, out),
+  timeout: Int,
+) -> Builder(in, out) {
+  Builder(..builder, send_timeout: timeout)
+}
+
 fn convert_body_types(
   resp: Response(ResponseData),
 ) -> Response(InternalResponseData) {
@@ -587,7 +599,11 @@ pub fn start(
   |> supervisor.add(
     supervision.supervisor(fn() {
       fn(req) { convert_body_types(builder.handler(req)) }
-      |> handler.with_func(factory_name, builder.read_timeout, 30_000)
+      |> handler.with_func(
+        factory_name,
+        builder.read_timeout,
+        builder.send_timeout,
+      )
       |> glisten.new(handler.init, _)
       |> glisten.bind(builder.interface)
       |> fn(handler) {
