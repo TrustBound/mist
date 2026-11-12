@@ -456,7 +456,7 @@ pub fn read_body(
       use next <- result.try(res)
       let got = bit_array.byte_size(next)
       let left = int.max(remaining - got, 0)
-      let new_data = bit_array.append(data, next)
+      let new_data = <<data:bits, next:bits>>
       case left {
         0 -> Ok(request.set_body(req, new_data))
         _rem ->
