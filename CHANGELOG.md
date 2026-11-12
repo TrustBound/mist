@@ -26,6 +26,7 @@
 - Read HTTP/2 request bodies until the end of the stream, not by `content-length`
 - Read HTTP/2 request headers split into `Continuation` frames
 - End the HTTP/2 request body on trailers instead of starting a second request
+- Reject HTTP/2 frames larger than the maximum frame size
 
 # v6.0.3
 

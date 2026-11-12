@@ -794,3 +794,27 @@ pub fn it_reads_bodies_ended_by_trailers_test() {
 
   bitstring_response_should_equal(actual, expected)
 }
+
+pub fn it_sends_go_away_on_oversized_frames_test() {
+  let headers = [
+    #(":method", "POST"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let body = <<string.repeat("a", 16_385):utf8>>
+
+  use <- scaffold.open_server(8888, scaffold.default_handler)
+
+  let actual = scaffold.http2_request_with_body(headers, body)
+
+  let expected =
+    response.new(0)
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<
+        0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 6,
+      >>),
+    )
+
+  bitstring_response_should_equal(actual, expected)
+}

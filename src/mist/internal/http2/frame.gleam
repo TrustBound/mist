@@ -106,6 +106,7 @@ pub type ConnectionError {
 
 pub fn decode(frame: BitArray) -> Result(#(Frame, BitArray), ConnectionError) {
   case frame {
+    <<length:size(24), _rest:bits>> if length > 16_384 -> Error(FrameSizeError)
     <<
       length:size(24),
       frame_type:size(8),

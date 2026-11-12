@@ -159,3 +159,8 @@ pub fn it_should_decode_settings_in_order_test() {
       ),
     )
 }
+
+pub fn it_should_return_error_for_oversized_frame_test() {
+  assert frame.decode(<<0, 64, 1, 0, 0, 0, 0, 0, 1>>)
+    == Error(frame.FrameSizeError)
+}
