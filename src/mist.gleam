@@ -1049,8 +1049,8 @@ pub fn chunked(
 ) -> Response(ResponseData) {
   case req.body.body {
     http.Initial(_data) -> http1_chunked(req, response, init, loop)
-    http.Stream(send_headers: send_headers, ..) ->
-      http2_chunked(req, response, init, loop, send_headers)
+    http.Stream(send_headers: send_headers, close_after: close_after, ..) ->
+      http2_chunked(req, response, init, loop, send_headers, close_after)
   }
 }
 
@@ -1123,6 +1123,7 @@ fn http2_chunked(
   init: fn(Subject(message)) -> state,
   loop: fn(state, message, Connection) -> ChunkNext(state),
   send_headers: fn(Int, List(gleam_http.Header)) -> Nil,
+  close_after: fn(process.Pid) -> Nil,
 ) -> Response(ResponseData) {
   send_headers(resp.status, resp.headers)
 
@@ -1146,12 +1147,7 @@ fn http2_chunked(
   }
   let factory_supervisor = factory.get_by_name(req.body.factory_name)
   case factory.start_child(factory_supervisor, start) {
-    Ok(started) -> {
-      let monitor = process.monitor(started.data)
-      process.new_selector()
-      |> process.select_specific_monitor(monitor, fn(_down) { Nil })
-      |> process.selector_receive_forever
-    }
+    Ok(started) -> close_after(started.data)
     Error(_start_error) ->
       logging.log(logging.Error, "Failed to start chunked response process")
   }
