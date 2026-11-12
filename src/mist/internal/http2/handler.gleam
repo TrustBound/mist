@@ -390,6 +390,21 @@ fn check_content_length(
   }
 }
 
+fn check_empty_body(
+  state: State,
+  conn: Connection,
+  identifier: StreamIdentifier(Frame),
+  content_length: Option(Int),
+  end_stream: Bool,
+  next: fn() -> Result(State, String),
+) -> Result(State, String) {
+  case content_length, end_stream {
+    Some(length), True if length != 0 ->
+      reset_stream(state, conn, identifier, frame.ProtocolError)
+    _, _ -> next()
+  }
+}
+
 fn handle_frame(
   frame: Frame,
   state: State,
@@ -501,6 +516,17 @@ fn handle_frame(
         |> result.try(int.parse)
         |> option.from_result
 
+      use <- check_empty_body(
+        State(
+          ..state,
+          last_stream_id: identifier,
+          receive_hpack_context: context,
+        ),
+        conn,
+        identifier,
+        pending_content_length,
+        end_stream,
+      )
       let assert Ok(new_stream) =
         stream.new(
           identifier,

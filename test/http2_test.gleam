@@ -1154,3 +1154,99 @@ pub fn it_resets_trailers_with_wrong_content_length_test() {
       ),
     ]
 }
+
+pub fn it_resets_streams_with_content_length_and_no_body_test() {
+  let headers = [
+    #(":method", "POST"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+    #("content-length", "5"),
+  ]
+  let started = process.new_subject()
+
+  use <- scaffold.open_server(8888, fn(_req) {
+    process.send(started, Nil)
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  let received =
+    scaffold.http2_receive(socket)
+    |> list.filter(fn(received) {
+      case received {
+        frame.Termination(..) -> True
+        _frame -> False
+      }
+    })
+
+  assert received
+    == [
+      frame.Termination(
+        error: frame.ProtocolError,
+        identifier: frame.stream_identifier(1),
+      ),
+    ]
+  assert process.receive(started, 100) == Error(Nil)
+}
+
+pub fn it_keeps_the_connection_after_content_length_without_a_body_test() {
+  let headers = [
+    #(":method", "POST"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, scaffold.uri_echo_handler)
+
+  let assert [reset, actual] =
+    scaffold.http2_requests([
+      #(<<>>, [#("content-length", "5"), ..headers], <<>>),
+      #(<<>>, [#("content-length", "0"), ..headers], <<>>),
+    ])
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "29")
+    |> response.set_body(bytes_tree.from_string("POST http://example.com:8080/"))
+
+  assert reset.status == 0
+  bitstring_response_should_equal(actual, expected)
+}
+
+pub fn it_counts_streams_reset_for_content_length_without_a_body_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, scaffold.uri_echo_handler)
+
+  let assert [reset, actual] =
+    scaffold.http2_requests([
+      #(<<>>, [#("content-length", "5"), ..headers], <<>>),
+      #(
+        <<
+          0, 0, 21, 1, 5, 0, 0, 0, 1, 130, 134, 132, 1, 16,
+          "example.com:8080":utf8,
+        >>,
+        headers,
+        <<>>,
+      ),
+    ])
+
+  let expected =
+    response.new(0)
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<
+        0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1,
+      >>),
+    )
+
+  assert reset.status == 0
+  bitstring_response_should_equal(actual, expected)
+}

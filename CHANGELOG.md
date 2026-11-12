@@ -34,6 +34,7 @@
 - Close the HTTP/2 connection on `Continuation` without a header block
 - Limit the size of HTTP/2 header blocks to 64 KiB
 - Reset HTTP/2 streams whose body does not match `content-length`
+- Reset HTTP/2 requests that declare `content-length` but have no body
 
 # v6.0.3
 
