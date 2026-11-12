@@ -1502,6 +1502,98 @@ pub fn it_receives_bodies_larger_than_the_default_window_test() {
   assert process.receive(read, 1000) == Ok(131_073)
 }
 
+pub fn it_advertises_the_configured_initial_window_size_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.start_server(
+    mist.new(fn(_req) {
+      response.new(200)
+      |> response.set_body(mist.Bytes(bytes_tree.new()))
+    })
+    |> mist.port(8888)
+    |> mist.with_initial_window_size(131_072),
+  )
+
+  let socket = scaffold.http2_open([], headers)
+  let settings =
+    scaffold.http2_receive(socket)
+    |> list.filter(fn(received) {
+      case received {
+        frame.Settings(ack: False, ..) -> True
+        _frame -> False
+      }
+    })
+
+  assert settings
+    == [
+      frame.Settings(ack: False, settings: [
+        frame.MaxConcurrentStreams(100),
+        frame.InitialWindowSize(131_072),
+      ]),
+    ]
+}
+
+pub fn it_resets_streams_that_exceed_the_configured_window_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.start_server(
+    mist.new(fn(_req) {
+      process.sleep_forever()
+      response.new(200)
+      |> response.set_body(mist.Bytes(bytes_tree.new()))
+    })
+    |> mist.port(8888)
+    |> mist.with_initial_window_size(131_072),
+  )
+
+  let socket = scaffold.http2_open([], headers)
+  scaffold.http2_send(socket, post_headers(3))
+  list.each(list.repeat(Nil, 8), fn(_frame) {
+    scaffold.http2_send(
+      socket,
+      frame.Data(
+        data: <<0:size(131_072)>>,
+        end_stream: False,
+        identifier: frame.stream_identifier(3),
+      ),
+    )
+  })
+  scaffold.http2_send(
+    socket,
+    frame.Data(
+      data: <<0>>,
+      end_stream: False,
+      identifier: frame.stream_identifier(3),
+    ),
+  )
+  let received =
+    scaffold.http2_receive(socket)
+    |> list.filter(fn(received) {
+      case received {
+        frame.Termination(..) -> True
+        _frame -> False
+      }
+    })
+
+  assert received
+    == [
+      frame.Termination(
+        error: frame.FlowControlError,
+        identifier: frame.stream_identifier(3),
+      ),
+    ]
+}
+
 pub fn it_resets_streams_that_exceed_the_receive_window_test() {
   let headers = [
     #(":method", "GET"),

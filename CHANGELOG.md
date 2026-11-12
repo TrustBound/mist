@@ -44,6 +44,7 @@
 - Add `with_read_timeout` to set how long to wait for request data
 - Add `with_send_timeout` to set how long to wait for HTTP/2 data to be sent
 - Advertise an HTTP/2 stream receive window of 1 MiB
+- Add `with_initial_window_size` to set the HTTP/2 stream receive window
 
 # v6.0.3
 

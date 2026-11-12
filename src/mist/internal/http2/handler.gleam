@@ -29,6 +29,7 @@ pub type State {
   State(
     fragment: Option(Frame),
     frame_buffer: Buffer,
+    initial_receive_window_size: Int,
     last_stream_id: StreamIdentifier(Frame),
     pending_sends: List(PendingSend),
     receive_hpack_context: HpackContext,
@@ -228,10 +229,6 @@ fn send_frames(
   }
 }
 
-const initial_receive_window_size = 1_048_576
-
-const window_update_threshold = 524_288
-
 pub fn consume_data(
   state: State,
   conn: Connection,
@@ -242,7 +239,9 @@ pub fn consume_data(
     Ok(stream.State(state: stream.RemoteClosed, ..)) | Error(_nil) -> Ok(state)
     Ok(stream) -> {
       let consumed = stream.consumed_size + size
-      case consumed >= window_update_threshold {
+      // Grant the window once half of it has been read, rounded up so that a
+      // window of 1 byte never sends an empty update
+      case consumed >= { state.initial_receive_window_size + 1 } / 2 {
         True -> {
           let stream =
             stream.State(
@@ -291,6 +290,7 @@ pub fn upgrade(
   conn: Connection,
   self: Subject(SendMessage),
   send_timeout: Int,
+  initial_receive_window_size: Int,
 ) -> Result(State, String) {
   let initial_settings = http2.default_settings()
   let settings_frame =
@@ -307,6 +307,7 @@ pub fn upgrade(
   State(
     fragment: None,
     frame_buffer: buffer.new(data),
+    initial_receive_window_size: initial_receive_window_size,
     last_stream_id: frame.stream_identifier(0),
     pending_sends: [],
     receive_hpack_context: http2.hpack_new_context(
@@ -634,7 +635,7 @@ fn handle_frame(
             False -> stream.Open
           },
           subject: new_stream.data,
-          receive_window_size: initial_receive_window_size,
+          receive_window_size: state.initial_receive_window_size,
           consumed_size: 0,
           send_window_size: state.settings.initial_window_size,
           pending_content_length: pending_content_length,

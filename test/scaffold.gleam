@@ -82,6 +82,7 @@ pub fn open_server_with_send_timeout(
           factory_supervisor,
           15_000,
           send_timeout,
+          1_048_576,
         )
 
       let glisten_handler =
