@@ -29,6 +29,7 @@
 - Reject HTTP/2 frames larger than the maximum frame size
 - Wait for HTTP/2 `chunked` and `server_sent_events` data to be sent before returning
 - Stop the HTTP/2 handler when its stream is reset
+- Cancel HTTP/2 `chunked` and `server_sent_events` sends that time out
 
 # v6.0.3
 

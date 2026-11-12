@@ -45,6 +45,15 @@ pub fn open_server(
   with handler: fn(Request(Connection)) -> Response(mist.ResponseData),
   after perform: fn() -> return,
 ) -> return {
+  open_server_with_send_timeout(port, handler, 30_000, perform)
+}
+
+pub fn open_server_with_send_timeout(
+  at port: Int,
+  with handler: fn(Request(Connection)) -> Response(mist.ResponseData),
+  send_timeout send_timeout: Int,
+  after perform: fn() -> return,
+) -> return {
   let factory_supervisor = process.new_name("mist_factory_supervisor")
   let chunked_response_supervisor =
     process.spawn_unlinked(fn() {
@@ -64,13 +73,14 @@ pub fn open_server(
       let assert Ok(socket) = tcp.accept(listener)
 
       let loop_func =
-        handler.with_func(
+        handler.with_send_timeout(
           fn(req) {
             req
             |> handler
             |> convert_body_types
           },
           factory_supervisor,
+          send_timeout,
         )
 
       let glisten_handler =
@@ -380,6 +390,18 @@ pub fn http2_open(
 pub fn http2_send(socket: Socket, frame: Frame) -> Nil {
   let assert Ok(_nil) = http2.send_frame(frame, socket, Tcp)
   Nil
+}
+
+pub fn http2_receive(socket: Socket) -> List(Frame) {
+  http2_send(socket, frame.Ping(ack: False, data: <<0:64>>))
+  receive_until_ping(socket, <<>>)
+}
+
+fn receive_until_ping(socket: Socket, data: BitArray) -> List(Frame) {
+  case receive_frame(socket, data) {
+    #(frame.Ping(ack: True, ..), _rest) -> []
+    #(received, rest) -> [received, ..receive_until_ping(socket, rest)]
+  }
 }
 
 fn send_requests(

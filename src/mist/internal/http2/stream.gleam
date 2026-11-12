@@ -70,6 +70,7 @@ pub fn new(
   connection: Connection,
   sender: Subject(SendMessage),
   end: Bool,
+  send_timeout: Int,
 ) -> Result(actor.Started(Subject(Message)), actor.StartError) {
   actor.new_with_initialiser(1000, fn(subject) {
     let data_selector =
@@ -105,7 +106,7 @@ pub fn new(
                   |> result.map(process.is_alive)
                   |> result.unwrap(False)
                 case open && process.is_alive(self) {
-                  True -> send_data(sender, identifier, data)
+                  True -> send_data(sender, identifier, data, send_timeout)
                   False -> Error(Nil)
                 }
               },
@@ -164,17 +165,24 @@ fn send_data(
   sender: Subject(SendMessage),
   identifier: StreamIdentifier(Frame),
   data: BitArray,
+  timeout: Int,
 ) -> Result(Nil, Nil) {
   use connection <- result.try(process.subject_owner(sender))
   let monitor = process.monitor(connection)
   let sent = process.new_subject()
   process.send(sender, SendData(identifier, data, sent))
-  let reply =
+  let selector =
     process.new_selector()
     |> process.select(sent)
     |> process.select_specific_monitor(monitor, fn(_down) { Error(Nil) })
-    |> process.selector_receive(30_000)
-    |> result.flatten
+  let reply = case process.selector_receive(selector, timeout) {
+    Ok(reply) -> reply
+    Error(_nil) -> {
+      process.send(sender, Reset(identifier, frame.Cancel))
+      let _ = process.selector_receive(selector, timeout)
+      Error(Nil)
+    }
+  }
   process.demonitor_process(monitor)
   reply
 }

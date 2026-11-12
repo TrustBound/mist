@@ -3,6 +3,7 @@ import gleam/erlang/process
 import gleam/http/request
 import gleam/http/response
 import gleam/int
+import gleam/list
 import gleam/option.{Some}
 import gleam/otp/actor
 import gleam/string
@@ -925,4 +926,44 @@ pub fn it_stops_the_handler_when_a_stream_is_reset_test() {
     |> process.selector_receive(1000)
 
   assert stopped == Ok(Nil)
+}
+
+pub fn it_cancels_sends_that_time_out_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let events = process.new_subject()
+
+  use <- scaffold.open_server_with_send_timeout(
+    8888,
+    chunk_events_handler(events),
+    100,
+  )
+
+  let socket = scaffold.http2_open([frame.InitialWindowSize(0)], headers)
+  let assert Ok("sending") = process.receive(events, 1000)
+  let assert Ok("failed") = process.receive(events, 1000)
+  scaffold.http2_send(
+    socket,
+    frame.WindowUpdate(amount: 1000, identifier: frame.stream_identifier(1)),
+  )
+  let received =
+    scaffold.http2_receive(socket)
+    |> list.filter(fn(received) {
+      case received {
+        frame.Settings(..) | frame.Header(..) -> False
+        _frame -> True
+      }
+    })
+
+  assert received
+    == [
+      frame.Termination(
+        error: frame.Cancel,
+        identifier: frame.stream_identifier(1),
+      ),
+    ]
 }

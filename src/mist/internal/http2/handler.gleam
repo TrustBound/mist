@@ -34,6 +34,7 @@ pub type State {
     receive_hpack_context: HpackContext,
     self: Subject(SendMessage),
     send_hpack_context: HpackContext,
+    send_timeout: Int,
     send_window_size: Int,
     receive_window_size: Int,
     settings: Http2Settings,
@@ -248,6 +249,7 @@ pub fn upgrade(
   data: BitArray,
   conn: Connection,
   self: Subject(SendMessage),
+  send_timeout: Int,
 ) -> Result(State, String) {
   let initial_settings = http2.default_settings()
   let settings_frame = frame.Settings(ack: False, settings: [])
@@ -270,6 +272,7 @@ pub fn upgrade(
     send_hpack_context: http2.hpack_new_context(
       initial_settings.header_table_size,
     ),
+    send_timeout: send_timeout,
     send_window_size: 65_535,
     settings: initial_settings,
     streams: dict.new(),
@@ -457,6 +460,7 @@ fn handle_frame(
           conn,
           state.self,
           end_stream,
+          state.send_timeout,
           // fn(resp) { process.send(state.self, Send(identifier, resp)) },
         )
       process.send(new_stream.data, Ready)
