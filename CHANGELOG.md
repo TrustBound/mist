@@ -33,6 +33,7 @@
 - Reject HTTP/2 requests that reuse a stream identifier
 - Close the HTTP/2 connection on `Continuation` without a header block
 - Limit the size of HTTP/2 header blocks to 64 KiB
+- Reset HTTP/2 streams whose body does not match `content-length`
 
 # v6.0.3
 

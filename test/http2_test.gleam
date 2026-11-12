@@ -1075,3 +1075,23 @@ pub fn it_sends_go_away_on_oversized_header_blocks_test() {
 
   bitstring_response_should_equal(actual, expected)
 }
+
+pub fn it_resets_streams_with_wrong_content_length_test() {
+  let headers = [
+    #(":method", "POST"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+    #("content-length", "5"),
+  ]
+
+  use <- scaffold.open_server(8888, scaffold.default_handler)
+
+  let actual = scaffold.http2_request_with_body(headers, <<"0123456789":utf8>>)
+
+  let expected =
+    response.new(0)
+    |> response.set_body(bytes_tree.from_bit_array(<<>>))
+
+  bitstring_response_should_equal(actual, expected)
+}

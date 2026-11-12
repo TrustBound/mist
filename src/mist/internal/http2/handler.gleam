@@ -355,6 +355,9 @@ fn receive_trailers(
       reset_stream(state, conn, identifier, frame.StreamClosed)
     Ok(_stream), False ->
       reset_stream(state, conn, identifier, frame.ProtocolError)
+    Ok(stream.State(pending_content_length: Some(remaining), ..)), True
+      if remaining != 0
+    -> reset_stream(state, conn, identifier, frame.ProtocolError)
     Ok(stream), True -> {
       process.send(stream.subject, stream.Data(bits: <<>>, end: True))
       let streams = case stream.state {
@@ -368,6 +371,22 @@ fn receive_trailers(
       }
       Ok(State(..state, streams: streams))
     }
+  }
+}
+
+fn check_content_length(
+  state: State,
+  conn: Connection,
+  identifier: StreamIdentifier(Frame),
+  size: Int,
+  end_stream: Bool,
+  next: fn() -> Result(State, String),
+) -> Result(State, String) {
+  case dict.get(state.streams, identifier), end_stream {
+    Ok(stream.State(pending_content_length: Some(remaining), ..)), True
+      if remaining != size
+    -> reset_stream(state, conn, identifier, frame.ProtocolError)
+    _, _ -> next()
   }
 }
 
@@ -540,6 +559,13 @@ fn handle_frame(
         False -> Ok(Nil)
       }
 
+      use <- check_content_length(
+        State(..state, receive_window_size: conn_receive_window_size),
+        conn,
+        identifier,
+        data_size,
+        end_stream,
+      )
       state.streams
       |> dict.get(identifier)
       |> result.map(stream.receive_data(_, data_size))
