@@ -228,7 +228,9 @@ fn send_frames(
   }
 }
 
-const window_update_threshold = 32_768
+const initial_receive_window_size = 1_048_576
+
+const window_update_threshold = 524_288
 
 pub fn consume_data(
   state: State,
@@ -294,6 +296,7 @@ pub fn upgrade(
   let settings_frame =
     frame.Settings(ack: False, settings: [
       frame.MaxConcurrentStreams(initial_settings.max_concurrent_streams),
+      frame.InitialWindowSize(initial_receive_window_size),
     ])
 
   let sent =
@@ -631,7 +634,7 @@ fn handle_frame(
             False -> stream.Open
           },
           subject: new_stream.data,
-          receive_window_size: 65_535,
+          receive_window_size: initial_receive_window_size,
           consumed_size: 0,
           send_window_size: state.settings.initial_window_size,
           pending_content_length: pending_content_length,

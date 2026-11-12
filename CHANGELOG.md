@@ -43,6 +43,7 @@
 - Wait up to 15 seconds for each part of an HTTP/2 request body
 - Add `with_read_timeout` to set how long to wait for request data
 - Add `with_send_timeout` to set how long to wait for HTTP/2 data to be sent
+- Advertise an HTTP/2 stream receive window of 1 MiB
 
 # v6.0.3
 

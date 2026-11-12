@@ -462,7 +462,7 @@ pub fn http2_receive(socket: Socket) -> List(Frame) {
 }
 
 pub fn http2_send_body(socket: Socket, identifier: Int, body: BitArray) -> Nil {
-  send_body(socket, frame.stream_identifier(identifier), body, 65_535, <<>>)
+  send_body(socket, frame.stream_identifier(identifier), body, 1_048_576, <<>>)
 }
 
 fn send_body(
@@ -487,7 +487,7 @@ fn send_body(
         -> window + amount
         _frame -> window
       }
-      assert window <= 65_535
+      assert window <= 1_048_576
       send_body(socket, identifier, body, window, rest)
     }
     _body, _size -> {
