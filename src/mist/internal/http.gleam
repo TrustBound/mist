@@ -121,6 +121,8 @@ pub fn parse_headers(
   }
 }
 
+const read_timeout = 15_000
+
 pub fn read_data(
   socket: Socket,
   transport: Transport,
@@ -129,10 +131,9 @@ pub fn read_data(
 ) -> Result(BitArray, DecodeError) {
   // TODO:  don't hard-code these, probably
   let to_read = int.min(buffer.remaining, 1_000_000)
-  let timeout = 15_000
   use data <- result.try(
     socket
-    |> transport.receive_timeout(transport, _, to_read, timeout)
+    |> transport.receive_timeout(transport, _, to_read, read_timeout)
     |> result.replace_error(error),
   )
   let next_buffer =
@@ -454,7 +455,7 @@ pub fn read_body(
     -> {
       let res =
         selector
-        |> process.selector_receive(1000)
+        |> process.selector_receive(read_timeout)
         |> result.replace_error(InvalidBody)
       use #(next, end) <- result.try(res)
       let new_data = <<data:bits, next:bits>>

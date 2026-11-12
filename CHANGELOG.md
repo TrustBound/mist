@@ -40,6 +40,7 @@
 - Reset HTTP/2 streams answered before the request body ended
 - Count HTTP/2 `Data` frame padding against the flow control windows
 - Advertise and enforce the HTTP/2 limit of 100 concurrent streams
+- Wait up to 15 seconds for each part of an HTTP/2 request body
 
 # v6.0.3
 

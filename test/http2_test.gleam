@@ -1646,3 +1646,45 @@ pub fn it_refuses_streams_over_the_concurrent_stream_limit_test() {
     frame.Termination(error: frame.NoError, ..),
   ] = accepted
 }
+
+pub fn it_waits_for_slow_request_bodies_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let read = process.new_subject()
+
+  use <- scaffold.open_server(8888, fn(req) {
+    case req.method {
+      http.Post -> process.send(read, mist.read_body(req, 1000))
+      _method -> Nil
+    }
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  scaffold.http2_send(socket, post_headers(3))
+  scaffold.http2_send(
+    socket,
+    frame.Data(
+      data: <<"012":utf8>>,
+      end_stream: False,
+      identifier: frame.stream_identifier(3),
+    ),
+  )
+  process.sleep(1200)
+  scaffold.http2_send(
+    socket,
+    frame.Data(
+      data: <<"345":utf8>>,
+      end_stream: True,
+      identifier: frame.stream_identifier(3),
+    ),
+  )
+  let assert Ok(Ok(req)) = process.receive(read, 1000)
+
+  assert req.body == <<"012345":utf8>>
+}
