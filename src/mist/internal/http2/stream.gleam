@@ -43,7 +43,6 @@ pub type SendMessage {
 pub type StreamState {
   Open
   RemoteClosed
-  LocalClosed
   Closed
 }
 

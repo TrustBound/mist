@@ -1438,3 +1438,73 @@ pub fn it_resets_streams_that_exceed_the_receive_window_test() {
       ),
     ]
 }
+
+fn wait_for_handler(started: process.Subject(process.Pid)) -> Nil {
+  let assert Ok(handler) = process.receive(started, 1000)
+  let monitor = process.monitor(handler)
+  let assert Ok(Nil) =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+    |> process.selector_receive(1000)
+  Nil
+}
+
+fn stream_frames(
+  frames: List(frame.Frame),
+  identifier: Int,
+) -> List(frame.Frame) {
+  let identifier = frame.stream_identifier(identifier)
+  list.filter(frames, fn(received) {
+    case received {
+      frame.Header(identifier: stream, ..)
+      | frame.Data(identifier: stream, ..)
+      | frame.Termination(identifier: stream, ..) -> stream == identifier
+      _frame -> False
+    }
+  })
+}
+
+pub fn it_closes_streams_answered_before_the_body_ends_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let started = process.new_subject()
+
+  use <- scaffold.open_server(8888, fn(_req) {
+    process.send(started, process.self())
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  wait_for_handler(started)
+  scaffold.http2_send(socket, post_headers(3))
+  wait_for_handler(started)
+  let answered = stream_frames(scaffold.http2_receive(socket), 3)
+  scaffold.http2_send(
+    socket,
+    frame.Header(
+      data: frame.Complete(<<
+        0, 7, ":method":utf8, 3, "GET":utf8, 0, 5, ":path":utf8, 1, "/":utf8, 0,
+        7, ":scheme":utf8, 4, "http":utf8, 0, 10, ":authority":utf8, 16,
+        "example.com:8080":utf8,
+      >>),
+      end_stream: True,
+      identifier: frame.stream_identifier(5),
+      priority: option.None,
+    ),
+  )
+  wait_for_handler(started)
+  let next = stream_frames(scaffold.http2_receive(socket), 5)
+
+  let assert [frame.Header(end_stream: True, ..), reset] = answered
+  assert reset
+    == frame.Termination(
+      error: frame.NoError,
+      identifier: frame.stream_identifier(3),
+    )
+  let assert [frame.Header(end_stream: True, ..)] = next
+}

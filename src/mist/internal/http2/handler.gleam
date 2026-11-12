@@ -50,15 +50,16 @@ pub fn receive_hpack_context(state: State, context: HpackContext) -> State {
   State(..state, receive_hpack_context: context)
 }
 
-pub fn close_stream(state: State, id: StreamIdentifier(Frame)) -> State {
+pub fn close_stream(
+  state: State,
+  conn: Connection,
+  id: StreamIdentifier(Frame),
+) -> Result(State, String) {
   case dict.get(state.streams, id) {
     Ok(stream.State(state: stream.RemoteClosed, ..)) ->
-      State(..state, streams: dict.delete(state.streams, id))
-    Ok(stream_state) -> {
-      let stream_state = stream.State(..stream_state, state: stream.LocalClosed)
-      State(..state, streams: dict.insert(state.streams, id, stream_state))
-    }
-    Error(_nil) -> state
+      Ok(State(..state, streams: dict.delete(state.streams, id)))
+    Ok(_stream) -> reset_stream(state, conn, id, frame.NoError)
+    Error(_nil) -> Ok(state)
   }
 }
 
@@ -186,7 +187,7 @@ fn send_frames(
               end_stream,
               state.settings.max_frame_size,
             )
-          use _nil <- result.map(written)
+          use _nil <- result.try(written)
           let stream =
             stream.State(
               ..stream,
@@ -201,16 +202,18 @@ fn send_frames(
           case end_stream, rest {
             True, _ -> {
               reply(sent, Ok(Nil))
-              close_stream(state, id)
+              close_stream(state, conn, id)
             }
             False, <<>> -> {
               reply(sent, Ok(Nil))
-              state
+              Ok(state)
             }
             False, _ -> {
               let pending =
                 PendingSend(identifier: id, data: rest, end: end, sent: sent)
-              State(..state, pending_sends: [pending, ..state.pending_sends])
+              Ok(
+                State(..state, pending_sends: [pending, ..state.pending_sends]),
+              )
             }
           }
         }
@@ -396,15 +399,12 @@ fn receive_trailers(
     -> reset_stream(state, conn, identifier, frame.ProtocolError)
     Ok(stream), True -> {
       process.send(stream.subject, stream.Data(bits: <<>>, end: True))
-      let streams = case stream.state {
-        stream.LocalClosed -> dict.delete(state.streams, identifier)
-        _ ->
-          dict.insert(
-            state.streams,
-            identifier,
-            stream.State(..stream, state: stream.RemoteClosed),
-          )
-      }
+      let streams =
+        dict.insert(
+          state.streams,
+          identifier,
+          stream.State(..stream, state: stream.RemoteClosed),
+        )
       Ok(State(..state, streams: streams))
     }
   }
@@ -659,15 +659,14 @@ fn handle_frame(
           new_stream.subject,
           stream.Data(bits: data, end: end_stream),
         )
-        let streams = case end_stream, new_stream.state {
-          True, stream.LocalClosed -> dict.delete(state.streams, identifier)
-          True, _ ->
+        let streams = case end_stream {
+          True ->
             dict.insert(
               state.streams,
               identifier,
               stream.State(..new_stream, state: stream.RemoteClosed),
             )
-          False, _ -> dict.insert(state.streams, identifier, new_stream)
+          False -> dict.insert(state.streams, identifier, new_stream)
         }
         State(
           ..state,

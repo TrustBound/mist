@@ -37,6 +37,7 @@
 - Reset HTTP/2 requests that declare `content-length` but have no body
 - Reset HTTP/2 streams that receive data after the client ended them
 - Grant the HTTP/2 stream receive window as the request body is read
+- Reset HTTP/2 streams answered before the request body ended
 
 # v6.0.3
 

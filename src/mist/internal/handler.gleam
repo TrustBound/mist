@@ -106,7 +106,9 @@ pub fn with_send_timeout(
                   case bytes_tree.to_bit_array(bytes) {
                     <<>> ->
                       http2.send_encoded(conn, headers)
-                      |> result.replace(http2_handler.close_stream(state, id))
+                      |> result.try(fn(_nil) {
+                        http2_handler.close_stream(state, conn, id)
+                      })
                     data ->
                       http2_handler.send_response(
                         state,
