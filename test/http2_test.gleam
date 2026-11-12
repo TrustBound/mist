@@ -889,3 +889,40 @@ pub fn it_fails_sends_on_reset_streams_test() {
 
   assert process.receive(events, 1000) == Ok("failed")
 }
+
+pub fn it_stops_the_handler_when_a_stream_is_reset_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let started = process.new_subject()
+
+  use <- scaffold.open_server(8888, fn(_req) {
+    process.send(started, process.self())
+    process.sleep_forever()
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  let assert Ok(handler) = process.receive(started, 1000)
+  let monitor = process.monitor(handler)
+  scaffold.http2_send(
+    socket,
+    frame.Header(
+      data: frame.Complete(<<0, 10, "x-checksum":utf8, 3, "abc":utf8>>),
+      end_stream: True,
+      identifier: frame.stream_identifier(1),
+      priority: option.None,
+    ),
+  )
+
+  let stopped =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+    |> process.selector_receive(1000)
+
+  assert stopped == Ok(Nil)
+}

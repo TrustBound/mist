@@ -91,6 +91,14 @@ pub fn reset_stream(
 }
 
 fn remove_stream(state: State, id: StreamIdentifier(Frame)) -> State {
+  let _ =
+    state.streams
+    |> dict.get(id)
+    |> result.try(fn(stream) { process.subject_owner(stream.subject) })
+    |> result.map(fn(pid) {
+      process.unlink(pid)
+      process.kill(pid)
+    })
   let #(removed, pending_sends) =
     list.partition(state.pending_sends, fn(pending) { pending.identifier == id })
   list.each(removed, fn(pending) { reply(pending.sent, Error(Nil)) })
@@ -155,7 +163,7 @@ fn send_frames(
   case dict.get(state.streams, id) {
     Error(_nil) -> {
       reply(sent, Error(Nil))
-      http2.send_encoded(conn, before) |> result.replace(state)
+      Ok(state)
     }
     Ok(stream) -> {
       let size =
@@ -585,14 +593,6 @@ fn handle_frame(
       |> result.replace_error("Failed to respond to ping")
     }
     None, frame.Termination(identifier: identifier, ..) -> {
-      let _ =
-        state.streams
-        |> dict.get(identifier)
-        |> result.try(fn(stream) { process.subject_owner(stream.subject) })
-        |> result.map(fn(pid) {
-          process.unlink(pid)
-          process.kill(pid)
-        })
       Ok(remove_stream(state, identifier))
     }
     // TODO:  obviously fill these out

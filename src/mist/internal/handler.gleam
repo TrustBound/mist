@@ -1,4 +1,5 @@
 import gleam/bytes_tree
+import gleam/dict
 import gleam/erlang/process.{type Selector, type Subject}
 import gleam/http/response
 import gleam/int
@@ -71,10 +72,14 @@ pub fn with_func(
       User(Send(id, resp)), Http2(state) -> {
         case resp.body {
           Bytes(bytes) ->
-            case http2_handler.headers_sent(state, id) {
-              True ->
+            case
+              dict.has_key(state.streams, id),
+              http2_handler.headers_sent(state, id)
+            {
+              False, _ -> Ok(state)
+              True, True ->
                 http2_handler.reset_stream(state, conn, id, frame.InternalError)
-              False -> {
+              True, False -> {
                 resp
                 |> response.set_body(bytes)
                 |> http2.encode_response(
@@ -115,22 +120,26 @@ pub fn with_func(
         })
       }
       User(SendHeaders(id, status, headers)), Http2(state) -> {
-        [#(":status", int.to_string(status)), ..headers]
-        |> http2.send_headers(
-          state.send_hpack_context,
-          conn,
-          _,
-          False,
-          id,
-          state.settings.max_frame_size,
-        )
-        |> result.map(fn(context) {
-          state
-          |> http2_handler.send_hpack_context(context)
-          |> http2_handler.set_headers_sent(id)
-          |> Http2
-        })
-        |> result.map_error(Error)
+        case dict.has_key(state.streams, id) {
+          False -> Ok(Http2(state))
+          True ->
+            [#(":status", int.to_string(status)), ..headers]
+            |> http2.send_headers(
+              state.send_hpack_context,
+              conn,
+              _,
+              False,
+              id,
+              state.settings.max_frame_size,
+            )
+            |> result.map(fn(context) {
+              state
+              |> http2_handler.send_hpack_context(context)
+              |> http2_handler.set_headers_sent(id)
+              |> Http2
+            })
+            |> result.map_error(Error)
+        }
       }
       User(SendData(id, data, sent)), Http2(state) -> {
         state
