@@ -24,6 +24,7 @@
 - Skip the HTTP/2 stream window update when the stream has ended
 - Stop copying the whole HTTP/2 request body for every `Data` frame
 - Read HTTP/2 request bodies until the end of the stream, not by `content-length`
+- Read HTTP/2 request headers split into `Continuation` frames
 
 # v6.0.3
 

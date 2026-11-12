@@ -357,9 +357,19 @@ fn send_requests(
     [#(data, headers, body), ..requests] -> {
       let assert Ok(#(headers, encode_context)) =
         http2.hpack_encode(encode_context, headers)
+      let #(headers, continuation) = case headers {
+        <<headers:bytes-size(16_384), rest:bytes>> if rest != <<>> -> #(
+          frame.Continued(headers),
+          frame.encode(frame.Continuation(
+            data: frame.Complete(rest),
+            identifier: frame.stream_identifier(identifier),
+          )),
+        )
+        _ -> #(frame.Complete(headers), <<>>)
+      }
       let header_frame =
         frame.Header(
-          data: frame.Complete(headers),
+          data: headers,
           end_stream: body == <<>>,
           identifier: frame.stream_identifier(identifier),
           priority: option.None,
@@ -378,6 +388,7 @@ fn send_requests(
 
       let assert Ok(_nil) =
         <<preface:bits, data:bits, frame.encode(header_frame):bits>>
+        |> bit_array.append(continuation)
         |> bit_array.append(body_frame)
         |> bytes_tree.from_bit_array
         |> tcp.send(socket, _)

@@ -297,6 +297,13 @@ fn handle_frame(
         )
       Ok(State(..state, fragment: Some(next)))
     }
+    Some(_fragment), _frame -> {
+      let _ = send_go_away(state, conn, frame.ProtocolError)
+      Error("Received a frame inside an HTTP/2 header block")
+    }
+    None, frame.Header(data: Continued(_data), ..) -> {
+      Ok(State(..state, fragment: Some(frame)))
+    }
     None, frame.WindowUpdate(amount, identifier) -> {
       case frame.get_stream_identifier(identifier) {
         0 -> {

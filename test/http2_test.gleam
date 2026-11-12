@@ -698,3 +698,64 @@ pub fn it_limits_bodies_without_content_length_test() {
 
   bitstring_response_should_equal(actual, expected)
 }
+
+pub fn it_reads_headers_split_into_frames_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+    #("x-large", string.repeat("a", 20_000)),
+  ]
+
+  use <- scaffold.open_server(8888, fn(req) {
+    let assert Ok(large) = request.get_header(req, "x-large")
+    response.new(200)
+    |> response.set_body(
+      mist.Bytes(bytes_tree.from_string(int.to_string(string.length(large)))),
+    )
+  })
+
+  let actual = scaffold.http2_request(headers)
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "5")
+    |> response.set_body(bytes_tree.from_bit_array(<<"20000":utf8>>))
+
+  bitstring_response_should_equal(actual, expected)
+}
+
+pub fn it_sends_go_away_on_frames_inside_headers_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, scaffold.uri_echo_handler)
+
+  let assert [_first, actual] =
+    scaffold.http2_requests([
+      #(<<>>, headers, <<>>),
+      #(
+        <<
+          0, 0, 1, 1, 1, 0, 0, 0, 3, 0, 0, 0, 8, 6, 0, 0, 0, 0, 0,
+          "pingping":utf8,
+        >>,
+        headers,
+        <<>>,
+      ),
+    ])
+
+  let expected =
+    response.new(0)
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<
+        0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1,
+      >>),
+    )
+
+  bitstring_response_should_equal(actual, expected)
+}
