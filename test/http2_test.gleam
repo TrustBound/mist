@@ -1028,3 +1028,50 @@ pub fn it_sends_go_away_on_continuation_without_headers_test() {
 
   bitstring_response_should_equal(actual, expected)
 }
+
+pub fn it_sends_go_away_on_oversized_header_blocks_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let fragment = <<string.repeat("a", 16_384):utf8>>
+  let header =
+    frame.encode(frame.Header(
+      data: frame.Continued(fragment),
+      end_stream: True,
+      identifier: frame.stream_identifier(3),
+      priority: option.None,
+    ))
+  let continuation =
+    frame.encode(frame.Continuation(
+      data: frame.Continued(fragment),
+      identifier: frame.stream_identifier(3),
+    ))
+
+  use <- scaffold.open_server(8888, scaffold.uri_echo_handler)
+
+  let assert [_first, actual] =
+    scaffold.http2_requests([
+      #(<<>>, headers, <<>>),
+      #(
+        <<
+          header:bits, continuation:bits, continuation:bits, continuation:bits,
+          0, 0, 1, 9, 0, 0, 0, 0, 3, 97,
+        >>,
+        headers,
+        <<>>,
+      ),
+    ])
+
+  let expected =
+    response.new(0)
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<
+        0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 11,
+      >>),
+    )
+
+  bitstring_response_should_equal(actual, expected)
+}

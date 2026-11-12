@@ -32,6 +32,7 @@
 - Cancel HTTP/2 `chunked` and `server_sent_events` sends that time out
 - Reject HTTP/2 requests that reuse a stream identifier
 - Close the HTTP/2 connection on `Continuation` without a header block
+- Limit the size of HTTP/2 header blocks to 64 KiB
 
 # v6.0.3
 

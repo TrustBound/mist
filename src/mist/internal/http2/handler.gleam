@@ -316,6 +316,24 @@ fn send_go_away(
   |> result.replace_error("Failed to send go away")
 }
 
+const max_header_block_size = 65_536
+
+fn append_fragment(
+  state: State,
+  conn: Connection,
+  existing: BitArray,
+  data: BitArray,
+) -> Result(BitArray, String) {
+  let block = <<existing:bits, data:bits>>
+  case bit_array.byte_size(block) > max_header_block_size {
+    True -> {
+      let _ = send_go_away(state, conn, frame.EnhanceYourCalm)
+      Error("Received an HTTP/2 header block that is too large")
+    }
+    False -> Ok(block)
+  }
+}
+
 fn receive_trailers(
   state: State,
   conn: Connection,
@@ -369,10 +387,11 @@ fn handle_frame(
       frame.Continuation(data: Complete(data), identifier: id2)
       if id1 == id2
     -> {
+      use block <- result.try(append_fragment(state, conn, existing, data))
       let complete_frame =
         frame.Header(
           identifier: id1,
-          data: Complete(<<existing:bits, data:bits>>),
+          data: Complete(block),
           end_stream: end_stream,
           priority: priority,
         )
@@ -392,10 +411,11 @@ fn handle_frame(
       frame.Continuation(data: Continued(data), identifier: id2)
       if id1 == id2
     -> {
+      use block <- result.try(append_fragment(state, conn, existing, data))
       let next =
         frame.Header(
           identifier: id1,
-          data: Continued(<<existing:bits, data:bits>>),
+          data: Continued(block),
           end_stream: end_stream,
           priority: priority,
         )
