@@ -1095,3 +1095,62 @@ pub fn it_resets_streams_with_wrong_content_length_test() {
 
   bitstring_response_should_equal(actual, expected)
 }
+
+pub fn it_resets_trailers_with_wrong_content_length_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, scaffold.default_handler)
+
+  let socket = scaffold.http2_open([], headers)
+  scaffold.http2_send(
+    socket,
+    frame.Header(
+      data: frame.Complete(<<
+        0, 7, ":method":utf8, 4, "POST":utf8, 0, 7, ":scheme":utf8, 4,
+        "http":utf8, 0, 10, ":authority":utf8, 16, "example.com:8080":utf8, 0, 5,
+        ":path":utf8, 1, "/":utf8, 0, 14, "content-length":utf8, 1, "5":utf8,
+      >>),
+      end_stream: False,
+      identifier: frame.stream_identifier(3),
+      priority: option.None,
+    ),
+  )
+  scaffold.http2_send(
+    socket,
+    frame.Data(
+      data: <<"012":utf8>>,
+      end_stream: False,
+      identifier: frame.stream_identifier(3),
+    ),
+  )
+  scaffold.http2_send(
+    socket,
+    frame.Header(
+      data: frame.Complete(<<0, 10, "x-checksum":utf8, 3, "abc":utf8>>),
+      end_stream: True,
+      identifier: frame.stream_identifier(3),
+      priority: option.None,
+    ),
+  )
+  let received =
+    scaffold.http2_receive(socket)
+    |> list.filter(fn(received) {
+      case received {
+        frame.Termination(..) -> True
+        _frame -> False
+      }
+    })
+
+  assert received
+    == [
+      frame.Termination(
+        error: frame.ProtocolError,
+        identifier: frame.stream_identifier(3),
+      ),
+    ]
+}
