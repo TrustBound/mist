@@ -18,7 +18,7 @@ import gleam/string
 import gleam/uri
 import glisten
 import glisten/internal/handler as glisten_handler
-import glisten/socket.{type Socket, type SocketReason, Closed}
+import glisten/socket.{type ListenSocket, type Socket, type SocketReason, Closed}
 import glisten/socket/options
 import glisten/tcp
 import glisten/transport.{Tcp}
@@ -60,7 +60,7 @@ pub fn open_server(
   let pid =
     process.spawn_unlinked(fn() {
       let assert Ok(listener) = tcp.listen(port, [])
-      process.send(ready, Nil)
+      process.send(ready, listener)
       let assert Ok(socket) = tcp.accept(listener)
 
       let loop_func =
@@ -91,23 +91,24 @@ pub fn open_server(
       process.sleep_forever()
     })
 
-  let assert Ok(_nil) = process.receive(ready, 1000)
+  let assert Ok(listener) = process.receive(ready, 1000)
 
   case exception.rescue(perform) {
     Ok(return) -> {
-      stop_server(pid)
+      stop_server(pid, listener)
       exit(chunked_response_supervisor, atom.create("shutdown"))
       return
     }
     Error(err) -> {
-      stop_server(pid)
+      stop_server(pid, listener)
       exit(chunked_response_supervisor, atom.create("shutdown"))
       panic as { "Handler failed with: " <> string.inspect(err) }
     }
   }
 }
 
-fn stop_server(pid: process.Pid) -> Nil {
+fn stop_server(pid: process.Pid, listener: ListenSocket) -> Nil {
+  let _closed = tcp.close(listener)
   let monitor = process.monitor(pid)
   process.kill(pid)
   let _down =
