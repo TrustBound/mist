@@ -325,8 +325,14 @@ fn receive_trailers(
   next: fn() -> Result(State, String),
 ) -> Result(State, String) {
   let state = State(..state, receive_hpack_context: context)
+  let id = frame.get_stream_identifier(identifier)
+  let last_id = frame.get_stream_identifier(state.last_stream_id)
   case dict.get(state.streams, identifier), end_stream {
-    Error(_nil), _ -> next()
+    Error(_nil), _ if id > last_id && id % 2 == 1 -> next()
+    Error(_nil), _ -> {
+      let _ = send_go_away(state, conn, frame.ProtocolError)
+      Error("Received an unexpected HTTP/2 stream identifier")
+    }
     Ok(stream.State(state: stream.RemoteClosed, ..)), _ ->
       reset_stream(state, conn, identifier, frame.StreamClosed)
     Ok(_stream), False ->

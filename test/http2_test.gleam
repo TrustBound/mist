@@ -967,3 +967,37 @@ pub fn it_cancels_sends_that_time_out_test() {
       ),
     ]
 }
+
+pub fn it_sends_go_away_on_reused_stream_ids_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, scaffold.uri_echo_handler)
+
+  let assert [_first, actual] =
+    scaffold.http2_requests([
+      #(<<>>, headers, <<>>),
+      #(
+        <<
+          0, 0, 21, 1, 5, 0, 0, 0, 1, 130, 134, 132, 1, 16,
+          "example.com:8080":utf8,
+        >>,
+        headers,
+        <<>>,
+      ),
+    ])
+
+  let expected =
+    response.new(0)
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<
+        0, 0, 8, 7, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 1,
+      >>),
+    )
+
+  bitstring_response_should_equal(actual, expected)
+}

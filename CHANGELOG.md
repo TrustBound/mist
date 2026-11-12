@@ -30,6 +30,7 @@
 - Wait for HTTP/2 `chunked` and `server_sent_events` data to be sent before returning
 - Stop the HTTP/2 handler when its stream is reset
 - Cancel HTTP/2 `chunked` and `server_sent_events` sends that time out
+- Reject HTTP/2 requests that reuse a stream identifier
 
 # v6.0.3
 
