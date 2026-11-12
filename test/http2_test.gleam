@@ -8,6 +8,7 @@ import gleam/otp/actor
 import gleam/string
 import gleam/string_tree
 import mist
+import mist/internal/http2/frame
 import scaffold.{bitstring_response_should_equal}
 
 pub fn it_applies_pseudo_headers_test() {
@@ -817,4 +818,72 @@ pub fn it_sends_go_away_on_oversized_frames_test() {
     )
 
   bitstring_response_should_equal(actual, expected)
+}
+
+fn chunk_events_handler(
+  events: process.Subject(String),
+) -> fn(request.Request(mist.Connection)) ->
+  response.Response(mist.ResponseData) {
+  fn(req) {
+    mist.chunked(
+      req,
+      response.new(200),
+      init: fn(subj) { process.send(subj, Nil) },
+      loop: fn(_state, _message, conn) {
+        process.send(events, "sending")
+        case mist.send_chunk(conn, <<"chunk":utf8>>) {
+          Ok(_nil) -> process.send(events, "sent")
+          Error(_nil) -> process.send(events, "failed")
+        }
+        mist.chunk_stop()
+      },
+    )
+  }
+}
+
+pub fn it_waits_for_the_window_before_sending_more_chunks_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let events = process.new_subject()
+
+  use <- scaffold.open_server(8888, chunk_events_handler(events))
+
+  let socket = scaffold.http2_open([frame.InitialWindowSize(0)], headers)
+  let assert Ok("sending") = process.receive(events, 1000)
+  let waiting = process.receive(events, 100)
+  scaffold.http2_send(
+    socket,
+    frame.WindowUpdate(amount: 1000, identifier: frame.stream_identifier(1)),
+  )
+  let assert Ok("sent") = process.receive(events, 1000)
+
+  assert waiting == Error(Nil)
+}
+
+pub fn it_fails_sends_on_reset_streams_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let events = process.new_subject()
+
+  use <- scaffold.open_server(8888, chunk_events_handler(events))
+
+  let socket = scaffold.http2_open([frame.InitialWindowSize(0)], headers)
+  let assert Ok("sending") = process.receive(events, 1000)
+  scaffold.http2_send(
+    socket,
+    frame.Termination(
+      error: frame.Cancel,
+      identifier: frame.stream_identifier(1),
+    ),
+  )
+
+  assert process.receive(events, 1000) == Ok("failed")
 }

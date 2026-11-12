@@ -342,6 +342,45 @@ pub fn http2_requests(
   responses
 }
 
+pub fn http2_open(
+  settings: List(frame.Setting),
+  headers: List(#(String, String)),
+) -> Socket {
+  let assert Ok(socket) =
+    [options.Mode(options.Binary), options.ActiveMode(options.Passive)]
+    |> options.to_erl_options
+    |> gen_tcp_connect(atom.create("localhost"), 8888, _)
+
+  let initial_settings = http2.default_settings()
+  let assert Ok(#(headers, _context)) =
+    http2.hpack_new_context(initial_settings.header_table_size)
+    |> http2.hpack_encode(headers)
+  let settings_frame = frame.Settings(ack: False, settings: settings)
+  let header_frame =
+    frame.Header(
+      data: frame.Complete(headers),
+      end_stream: True,
+      identifier: frame.stream_identifier(1),
+      priority: option.None,
+    )
+
+  let assert Ok(_nil) =
+    <<
+      "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n":utf8,
+      frame.encode(settings_frame):bits,
+      frame.encode(header_frame):bits,
+    >>
+    |> bytes_tree.from_bit_array
+    |> tcp.send(socket, _)
+
+  socket
+}
+
+pub fn http2_send(socket: Socket, frame: Frame) -> Nil {
+  let assert Ok(_nil) = http2.send_frame(frame, socket, Tcp)
+  Nil
+}
+
 fn send_requests(
   socket: Socket,
   requests: List(#(BitArray, List(#(String, String)), BitArray)),

@@ -27,6 +27,7 @@
 - Read HTTP/2 request headers split into `Continuation` frames
 - End the HTTP/2 request body on trailers instead of starting a second request
 - Reject HTTP/2 frames larger than the maximum frame size
+- Wait for HTTP/2 `chunked` and `server_sent_events` data to be sent before returning
 
 # v6.0.3
 

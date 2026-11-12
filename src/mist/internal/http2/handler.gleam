@@ -17,7 +17,12 @@ import mist/internal/http2/frame.{
 import mist/internal/http2/stream.{type SendMessage, Ready}
 
 pub type PendingSend {
-  PendingSend(identifier: StreamIdentifier(Frame), data: BitArray, end: Bool)
+  PendingSend(
+    identifier: StreamIdentifier(Frame),
+    data: BitArray,
+    end: Bool,
+    sent: Option(Subject(Result(Nil, Nil))),
+  )
 }
 
 pub type State {
@@ -81,8 +86,29 @@ pub fn reset_stream(
 ) -> Result(State, String) {
   frame.Termination(error: error, identifier: id)
   |> http2.send_frame(conn.socket, conn.transport)
-  |> result.replace(State(..state, streams: dict.delete(state.streams, id)))
+  |> result.replace(remove_stream(state, id))
   |> result.replace_error("Failed to reset stream")
+}
+
+fn remove_stream(state: State, id: StreamIdentifier(Frame)) -> State {
+  let #(removed, pending_sends) =
+    list.partition(state.pending_sends, fn(pending) { pending.identifier == id })
+  list.each(removed, fn(pending) { reply(pending.sent, Error(Nil)) })
+  State(
+    ..state,
+    pending_sends: pending_sends,
+    streams: dict.delete(state.streams, id),
+  )
+}
+
+fn reply(
+  sent: Option(Subject(Result(Nil, Nil))),
+  result: Result(Nil, Nil),
+) -> Nil {
+  case sent {
+    Some(sent) -> process.send(sent, result)
+    None -> Nil
+  }
 }
 
 pub fn send_data(
@@ -92,7 +118,17 @@ pub fn send_data(
   data: BitArray,
   end: Bool,
 ) -> Result(State, String) {
-  send_frames(state, conn, id, <<>>, data, end)
+  send_frames(state, conn, id, <<>>, data, end, None)
+}
+
+pub fn send_data_reply(
+  state: State,
+  conn: Connection,
+  id: StreamIdentifier(Frame),
+  data: BitArray,
+  sent: Subject(Result(Nil, Nil)),
+) -> Result(State, String) {
+  send_frames(state, conn, id, <<>>, data, False, Some(sent))
 }
 
 pub fn send_response(
@@ -102,7 +138,7 @@ pub fn send_response(
   headers: BitArray,
   data: BitArray,
 ) -> Result(State, String) {
-  send_frames(state, conn, id, headers, data, True)
+  send_frames(state, conn, id, headers, data, True, None)
 }
 
 fn send_frames(
@@ -112,11 +148,15 @@ fn send_frames(
   before: BitArray,
   data: BitArray,
   end: Bool,
+  sent: Option(Subject(Result(Nil, Nil))),
 ) -> Result(State, String) {
   let queued =
     list.any(state.pending_sends, fn(pending) { pending.identifier == id })
   case dict.get(state.streams, id) {
-    Error(_nil) -> http2.send_encoded(conn, before) |> result.replace(state)
+    Error(_nil) -> {
+      reply(sent, Error(Nil))
+      http2.send_encoded(conn, before) |> result.replace(state)
+    }
     Ok(stream) -> {
       let size =
         flow_control.compute_send_size(
@@ -128,7 +168,7 @@ fn send_frames(
         True, False -> {
           let assert <<data:bytes-size(size), rest:bytes>> = data
           let end_stream = end && rest == <<>>
-          let sent =
+          let written =
             http2.send_body(
               conn,
               before,
@@ -137,7 +177,7 @@ fn send_frames(
               end_stream,
               state.settings.max_frame_size,
             )
-          use _nil <- result.map(sent)
+          use _nil <- result.map(written)
           let stream =
             stream.State(
               ..stream,
@@ -150,17 +190,25 @@ fn send_frames(
               streams: dict.insert(state.streams, id, stream),
             )
           case end_stream, rest {
-            True, _ -> close_stream(state, id)
-            False, <<>> -> state
+            True, _ -> {
+              reply(sent, Ok(Nil))
+              close_stream(state, id)
+            }
+            False, <<>> -> {
+              reply(sent, Ok(Nil))
+              state
+            }
             False, _ -> {
-              let pending = PendingSend(identifier: id, data: rest, end: end)
+              let pending =
+                PendingSend(identifier: id, data: rest, end: end, sent: sent)
               State(..state, pending_sends: [pending, ..state.pending_sends])
             }
           }
         }
         _, _ -> {
           use _nil <- result.map(http2.send_encoded(conn, before))
-          let pending = PendingSend(identifier: id, data: data, end: end)
+          let pending =
+            PendingSend(identifier: id, data: data, end: end, sent: sent)
           State(..state, pending_sends: [pending, ..state.pending_sends])
         }
       }
@@ -172,7 +220,15 @@ fn do_pending_sends(state: State, conn: Connection) -> Result(State, String) {
   state.pending_sends
   |> list.reverse
   |> list.try_fold(State(..state, pending_sends: []), fn(state, pending) {
-    send_data(state, conn, pending.identifier, pending.data, pending.end)
+    send_frames(
+      state,
+      conn,
+      pending.identifier,
+      <<>>,
+      pending.data,
+      pending.end,
+      pending.sent,
+    )
   })
 }
 
@@ -537,7 +593,7 @@ fn handle_frame(
           process.unlink(pid)
           process.kill(pid)
         })
-      Ok(State(..state, streams: dict.delete(state.streams, identifier)))
+      Ok(remove_stream(state, identifier))
     }
     // TODO:  obviously fill these out
     _, frame -> {

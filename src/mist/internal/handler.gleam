@@ -132,9 +132,9 @@ pub fn with_func(
         })
         |> result.map_error(Error)
       }
-      User(SendData(id, data)), Http2(state) -> {
+      User(SendData(id, data, sent)), Http2(state) -> {
         state
-        |> http2_handler.send_data(conn, id, data, False)
+        |> http2_handler.send_data_reply(conn, id, data, sent)
         |> result.map(Http2)
         |> result.map_error(Error)
       }

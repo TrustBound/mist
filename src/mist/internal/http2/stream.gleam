@@ -33,7 +33,11 @@ pub type SendMessage {
     status: Int,
     headers: List(Header),
   )
-  SendData(identifier: StreamIdentifier(Frame), data: BitArray)
+  SendData(
+    identifier: StreamIdentifier(Frame),
+    data: BitArray,
+    sent: Subject(Result(Nil, Nil)),
+  )
 }
 
 pub type StreamState {
@@ -101,7 +105,7 @@ pub fn new(
                   |> result.map(process.is_alive)
                   |> result.unwrap(False)
                 case open && process.is_alive(self) {
-                  True -> Ok(process.send(sender, SendData(identifier, data)))
+                  True -> send_data(sender, identifier, data)
                   False -> Error(Nil)
                 }
               },
@@ -154,6 +158,25 @@ pub fn new(
     }
   })
   |> actor.start
+}
+
+fn send_data(
+  sender: Subject(SendMessage),
+  identifier: StreamIdentifier(Frame),
+  data: BitArray,
+) -> Result(Nil, Nil) {
+  use connection <- result.try(process.subject_owner(sender))
+  let monitor = process.monitor(connection)
+  let sent = process.new_subject()
+  process.send(sender, SendData(identifier, data, sent))
+  let reply =
+    process.new_selector()
+    |> process.select(sent)
+    |> process.select_specific_monitor(monitor, fn(_down) { Error(Nil) })
+    |> process.selector_receive(30_000)
+    |> result.flatten
+  process.demonitor_process(monitor)
+  reply
 }
 
 fn send_file_body(
