@@ -489,6 +489,64 @@ pub fn it_sends_server_sent_events_test() {
   bitstring_response_should_equal(after, expected)
 }
 
+pub fn it_sends_events_sent_after_server_sent_events_returns_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let started = process.new_subject()
+
+  use <- scaffold.open_server(8888, fn(req) {
+    process.send(started, process.self())
+    let subjects = process.new_subject()
+    let resp =
+      mist.server_sent_events(
+        req,
+        response.new(200),
+        init: fn(subj) { process.send(subjects, subj) },
+        loop: fn(state, message, conn) {
+          let event =
+            mist.event(string_tree.from_string(int.to_string(message)))
+          let assert Ok(_nil) = mist.send_event(conn, event)
+          case message {
+            2 -> actor.stop()
+            _ -> actor.continue(state)
+          }
+        },
+      )
+    let assert Ok(subj) = process.receive(subjects, 1000)
+    process.send(subj, 1)
+    process.send(subj, 2)
+    resp
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  wait_for_handler(started)
+  let received = stream_frames(scaffold.http2_receive(socket), 1)
+
+  let assert [frame.Header(end_stream: False, ..), ..data] = received
+  assert data
+    == [
+      frame.Data(
+        data: <<"data: 1\n\n":utf8>>,
+        end_stream: False,
+        identifier: frame.stream_identifier(1),
+      ),
+      frame.Data(
+        data: <<"data: 2\n\n":utf8>>,
+        end_stream: False,
+        identifier: frame.stream_identifier(1),
+      ),
+      frame.Data(
+        data: <<>>,
+        end_stream: True,
+        identifier: frame.stream_identifier(1),
+      ),
+    ]
+}
+
 pub fn it_sends_chunked_responses_test() {
   let headers = [
     #(":method", "POST"),

@@ -15,7 +15,7 @@ import logging
 import mist/internal/file
 import mist/internal/http.{
   type Connection, type Handler, type ResponseData, Bytes, Chunked, Connection,
-  File, Stream,
+  File, ServerSentEvents, Stream,
 }
 import mist/internal/http2/frame.{type Frame, type StreamIdentifier}
 
@@ -149,7 +149,7 @@ pub fn new(
             }
             case resp.body {
               File(..) -> send_file_body(sender, identifier, resp)
-              Chunked -> {
+              Chunked | ServerSentEvents -> {
                 wait_for_responder(responder)
                 process.send(sender, Send(identifier, resp))
               }
