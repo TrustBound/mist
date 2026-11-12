@@ -17,6 +17,7 @@
 - Send HTTP/2 `GoAway` on connection errors and close normally on `GoAway`
 - Support `server_sent_events` over HTTP/2
 - Support `chunked` responses over HTTP/2
+- Fix reading a file at its end returning an invalid value
 
 # v6.0.3
 
