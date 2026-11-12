@@ -41,6 +41,7 @@
 - Count HTTP/2 `Data` frame padding against the flow control windows
 - Advertise and enforce the HTTP/2 limit of 100 concurrent streams
 - Wait up to 15 seconds for each part of an HTTP/2 request body
+- Add `with_read_timeout` to set how long to wait for request data
 
 # v6.0.3
 

@@ -73,13 +73,14 @@ pub fn open_server_with_send_timeout(
       let assert Ok(socket) = tcp.accept(listener)
 
       let loop_func =
-        handler.with_send_timeout(
+        handler.with_func(
           fn(req) {
             req
             |> handler
             |> convert_body_types
           },
           factory_supervisor,
+          15_000,
           send_timeout,
         )
 
@@ -114,6 +115,30 @@ pub fn open_server_with_send_timeout(
       exit(chunked_response_supervisor, atom.create("shutdown"))
       panic as { "Handler failed with: " <> string.inspect(err) }
     }
+  }
+}
+
+pub fn start_server(
+  with builder: mist.Builder(Connection, mist.ResponseData),
+  after perform: fn() -> return,
+) -> return {
+  let assert Ok(server) =
+    builder
+    |> mist.after_start(fn(_port, _scheme, _interface) { Nil })
+    |> mist.start
+  process.unlink(server.pid)
+
+  let result = exception.rescue(perform)
+  let monitor = process.monitor(server.pid)
+  exit(server.pid, atom.create("shutdown"))
+  let _down =
+    process.new_selector()
+    |> process.select_specific_monitor(monitor, fn(down) { down })
+    |> process.selector_receive(1000)
+
+  case result {
+    Ok(return) -> return
+    Error(err) -> panic as { "Handler failed with: " <> string.inspect(err) }
   }
 }
 
@@ -385,6 +410,22 @@ pub fn http2_open(
     |> tcp.send(socket, _)
 
   socket
+}
+
+pub fn http1_open(data: BitArray) -> Socket {
+  let assert Ok(socket) =
+    [options.Mode(options.Binary), options.ActiveMode(options.Passive)]
+    |> options.to_erl_options
+    |> gen_tcp_connect(atom.create("localhost"), 8888, _)
+  let assert Ok(_nil) = http1_send(socket, data)
+
+  socket
+}
+
+pub fn http1_send(socket: Socket, data: BitArray) -> Result(Nil, SocketReason) {
+  data
+  |> bytes_tree.from_bit_array
+  |> tcp.send(socket, _)
 }
 
 pub fn http2_send(socket: Socket, frame: Frame) -> Nil {

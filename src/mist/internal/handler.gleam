@@ -54,18 +54,7 @@ pub fn with_func(
       process.Pid,
     ),
   ),
-) -> Loop(State, SendMessage) {
-  with_send_timeout(handler, factory_name, 30_000)
-}
-
-pub fn with_send_timeout(
-  handler: Handler,
-  factory_name: process.Name(
-    factory.Message(
-      fn() -> Result(actor.Started(process.Pid), actor.StartError),
-      process.Pid,
-    ),
-  ),
+  read_timeout: Int,
   send_timeout: Int,
 ) -> Loop(State, SendMessage) {
   fn(state: State, msg, conn: glisten.Connection(SendMessage)) {
@@ -76,6 +65,7 @@ pub fn with_send_timeout(
         socket: conn.socket,
         transport: conn.transport,
         factory_name:,
+        read_timeout:,
       )
 
     let result = case msg, state {

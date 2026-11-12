@@ -44,6 +44,7 @@ pub type Connection {
         process.Pid,
       ),
     ),
+    read_timeout: Int,
   )
 }
 
@@ -97,6 +98,7 @@ pub fn parse_headers(
   socket: Socket,
   transport: Transport,
   headers: Dict(String, String),
+  read_timeout: Int,
 ) -> Result(#(Dict(String, String), BitArray), DecodeError) {
   case decode_packet(HttphBin, bs, []) {
     Ok(BinaryData(HttpHeader(_, _field, field, value), rest)) -> {
@@ -104,7 +106,7 @@ pub fn parse_headers(
       let assert Ok(value) = bit_array.to_string(value)
       headers
       |> dict.insert(field, value)
-      |> parse_headers(rest, socket, transport, _)
+      |> parse_headers(rest, socket, transport, _, read_timeout)
     }
     Ok(EndOfHeaders(rest)) -> Ok(#(headers, rest))
     Ok(MoreData(size)) -> {
@@ -114,22 +116,22 @@ pub fn parse_headers(
         transport,
         Buffer(amount_to_read, bs),
         UnknownHeader,
+        read_timeout,
       ))
-      parse_headers(next, socket, transport, headers)
+      parse_headers(next, socket, transport, headers, read_timeout)
     }
     _other -> Error(UnknownHeader)
   }
 }
-
-const read_timeout = 15_000
 
 pub fn read_data(
   socket: Socket,
   transport: Transport,
   buffer: Buffer,
   error: DecodeError,
+  read_timeout: Int,
 ) -> Result(BitArray, DecodeError) {
-  // TODO:  don't hard-code these, probably
+  // TODO:  don't hard-code this, probably
   let to_read = int.min(buffer.remaining, 1_000_000)
   use data <- result.try(
     socket
@@ -143,7 +145,7 @@ pub fn read_data(
     >>)
 
   case next_buffer.remaining > 0 {
-    True -> read_data(socket, transport, next_buffer, error)
+    True -> read_data(socket, transport, next_buffer, error, read_timeout)
     False -> Ok(next_buffer.data)
   }
 }
@@ -190,6 +192,7 @@ fn read_chunk(
   transport: Transport,
   buffer: Buffer,
   body: BytesTree,
+  read_timeout: Int,
 ) -> Result(BytesTree, DecodeError) {
   case buffer.data, binary_match(buffer.data, crnl) {
     _, Ok(#(offset, _)) -> {
@@ -219,6 +222,7 @@ fn read_chunk(
                 transport,
                 Buffer(0, rest),
                 bytes_tree.append(body, next_chunk),
+                read_timeout,
               )
             _ -> {
               use next <- result.try(read_data(
@@ -226,8 +230,9 @@ fn read_chunk(
                 transport,
                 Buffer(0, buffer.data),
                 InvalidBody,
+                read_timeout,
               ))
-              read_chunk(socket, transport, Buffer(0, next), body)
+              read_chunk(socket, transport, Buffer(0, next), body, read_timeout)
             }
           }
       }
@@ -238,8 +243,9 @@ fn read_chunk(
         transport,
         Buffer(0, data),
         InvalidBody,
+        read_timeout,
       ))
-      read_chunk(socket, transport, Buffer(0, next), body)
+      read_chunk(socket, transport, Buffer(0, next), body, read_timeout)
     }
   }
 }
@@ -307,6 +313,7 @@ pub fn parse_request(
         conn.socket,
         conn.transport,
         dict.new(),
+        conn.read_timeout,
       ))
       use path <- result.try(
         path
@@ -377,6 +384,7 @@ pub fn parse_request(
         conn.transport,
         Buffer(amount_to_read, bs),
         MalformedRequest,
+        conn.read_timeout,
       ))
       parse_request(next, conn)
     }
@@ -414,6 +422,7 @@ pub fn read_body(
         transport,
         Buffer(remaining: 0, data: rest),
         bytes_tree.new(),
+        req.body.read_timeout,
       ))
       Ok(request.set_body(req, bytes_tree.to_bit_array(chunk)))
     }
@@ -437,6 +446,7 @@ pub fn read_body(
             transport,
             Buffer(remaining, rest),
             InvalidBody,
+            req.body.read_timeout,
           )
       }
       |> result.map(request.set_body(req, _))
@@ -455,7 +465,7 @@ pub fn read_body(
     -> {
       let res =
         selector
-        |> process.selector_receive(read_timeout)
+        |> process.selector_receive(req.body.read_timeout)
         |> result.replace_error(InvalidBody)
       use #(next, end) <- result.try(res)
       let new_data = <<data:bits, next:bits>>

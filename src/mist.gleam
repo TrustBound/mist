@@ -275,7 +275,13 @@ fn do_stream(
       }
 
       _, _buffer_size -> {
-        http.read_data(socket, transport, buffer.empty(), http.InvalidBody)
+        http.read_data(
+          socket,
+          transport,
+          buffer.empty(),
+          http.InvalidBody,
+          req.body.read_timeout,
+        )
         |> result.replace_error(MalformedBody)
         |> result.map(fn(data) {
           let fetched_data = bit_array.byte_size(data)
@@ -302,9 +308,10 @@ fn do_stream_chunked(
 ) -> fn(Int) -> Result(Chunk, ReadError) {
   let socket = req.body.socket
   let transport = req.body.transport
+  let read_timeout = req.body.read_timeout
 
   fn(size) {
-    case fetch_chunks_until(socket, transport, state, size) {
+    case fetch_chunks_until(socket, transport, state, size, read_timeout) {
       Ok(#(data, ChunkState(done: True, ..))) -> {
         Ok(Chunk(data, fn(_size) { Ok(Done) }))
       }
@@ -321,6 +328,7 @@ fn fetch_chunks_until(
   transport: transport.Transport,
   state: ChunkState,
   byte_size: Int,
+  read_timeout: Int,
 ) -> Result(#(BitArray, ChunkState), ReadError) {
   let data_size = bit_array.byte_size(state.data_buffer.data)
   case state.done, data_size {
@@ -338,15 +346,33 @@ fn fetch_chunks_until(
         http.Complete -> {
           let updated_state =
             ChunkState(..state, chunk_buffer: buffer.empty(), done: True)
-          fetch_chunks_until(socket, transport, updated_state, byte_size)
+          fetch_chunks_until(
+            socket,
+            transport,
+            updated_state,
+            byte_size,
+            read_timeout,
+          )
         }
         http.Chunk(<<>>, next_buffer) -> {
-          http.read_data(socket, transport, next_buffer, http.InvalidBody)
+          http.read_data(
+            socket,
+            transport,
+            next_buffer,
+            http.InvalidBody,
+            read_timeout,
+          )
           |> result.replace_error(MalformedBody)
           |> result.try(fn(new_data) {
             let updated_state =
               ChunkState(..state, chunk_buffer: buffer.new(new_data))
-            fetch_chunks_until(socket, transport, updated_state, byte_size)
+            fetch_chunks_until(
+              socket,
+              transport,
+              updated_state,
+              byte_size,
+              read_timeout,
+            )
           })
         }
         http.Chunk(data, next_buffer) -> {
@@ -356,7 +382,13 @@ fn fetch_chunks_until(
               data_buffer: buffer.append(state.data_buffer, data),
               chunk_buffer: next_buffer,
             )
-          fetch_chunks_until(socket, transport, updated_state, byte_size)
+          fetch_chunks_until(
+            socket,
+            transport,
+            updated_state,
+            byte_size,
+            read_timeout,
+          )
         }
       }
     }
@@ -419,6 +451,7 @@ pub opaque type Builder(request_body, response_body) {
     interface: String,
     ipv6_support: Bool,
     tls_options: Option(TlsOptions),
+    read_timeout: Int,
   )
 }
 
@@ -445,6 +478,7 @@ pub fn new(handler: fn(Request(in)) -> Response(out)) -> Builder(in, out) {
       io.println(message)
     },
     tls_options: None,
+    read_timeout: 15_000,
   )
 }
 
@@ -515,6 +549,15 @@ pub fn with_tls(
   Builder(..builder, tls_options: Some(CertKeyFiles(cert, key)))
 }
 
+/// Set how long, in milliseconds, to wait for data from the client while
+/// reading a request. The default is 15 seconds.
+pub fn with_read_timeout(
+  builder: Builder(in, out),
+  timeout: Int,
+) -> Builder(in, out) {
+  Builder(..builder, read_timeout: timeout)
+}
+
 fn convert_body_types(
   resp: Response(ResponseData),
 ) -> Response(InternalResponseData) {
@@ -544,7 +587,7 @@ pub fn start(
   |> supervisor.add(
     supervision.supervisor(fn() {
       fn(req) { convert_body_types(builder.handler(req)) }
-      |> handler.with_func(factory_name)
+      |> handler.with_func(factory_name, builder.read_timeout, 30_000)
       |> glisten.new(handler.init, _)
       |> glisten.bind(builder.interface)
       |> fn(handler) {
