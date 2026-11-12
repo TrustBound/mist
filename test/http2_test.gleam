@@ -3,6 +3,7 @@ import gleam/erlang/process
 import gleam/http/request
 import gleam/http/response
 import gleam/int
+import gleam/option.{Some}
 import gleam/otp/actor
 import gleam/string
 import gleam/string_tree
@@ -505,4 +506,56 @@ pub fn it_sends_chunked_responses_test() {
 
   bitstring_response_should_equal(actual, expected)
   bitstring_response_should_equal(after, expected)
+}
+
+pub fn it_sends_file_responses_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, fn(_req) {
+    let assert Ok(file) =
+      mist.send_file("gleam.toml", offset: 8, limit: Some(4))
+    response.new(200)
+    |> response.set_body(file)
+  })
+
+  let assert [actual, after] =
+    scaffold.http2_requests([#(<<>>, headers, <<>>), #(<<>>, headers, <<>>)])
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "4")
+    |> response.set_body(bytes_tree.from_bit_array(<<"mist":utf8>>))
+
+  bitstring_response_should_equal(actual, expected)
+  bitstring_response_should_equal(after, expected)
+}
+
+pub fn it_sends_empty_file_responses_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, fn(_req) {
+    let assert Ok(file) =
+      mist.send_file("gleam.toml", offset: 0, limit: Some(0))
+    response.new(200)
+    |> response.set_body(file)
+  })
+
+  let actual = scaffold.http2_request(headers)
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "0")
+    |> response.set_body(bytes_tree.from_bit_array(<<>>))
+
+  bitstring_response_should_equal(actual, expected)
 }

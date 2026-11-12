@@ -12,8 +12,10 @@ import gleam/result
 import gleam/string
 import gleam/uri
 import logging
+import mist/internal/file
 import mist/internal/http.{
-  type Connection, type Handler, type ResponseData, Bytes, Connection, Stream,
+  type Connection, type Handler, type ResponseData, Bytes, Connection, File,
+  Stream,
 }
 import mist/internal/http2/flow_control
 import mist/internal/http2/frame.{type Frame, type StreamIdentifier}
@@ -124,7 +126,10 @@ pub fn new(
                 |> response.set_body(Bytes(bytes_tree.new()))
               }
             }
-            process.send(sender, Send(identifier, resp))
+            case resp.body {
+              File(..) -> send_file_body(sender, identifier, resp)
+              _ -> process.send(sender, Send(identifier, resp))
+            }
             actor.stop()
           }
           Error(_nil) -> {
@@ -138,6 +143,39 @@ pub fn new(
     }
   })
   |> actor.start
+}
+
+fn send_file_body(
+  sender: Subject(SendMessage),
+  identifier: StreamIdentifier(Frame),
+  resp: Response(ResponseData),
+) -> Nil {
+  let assert File(file_descriptor, offset, length) = resp.body
+  let read = file.pread(file_descriptor, offset, length)
+
+  case file.close(file_descriptor) {
+    Ok(_nil) -> Nil
+    Error(reason) -> {
+      logging.log(
+        logging.Error,
+        "Failed to close file: " <> file.error_to_string(reason),
+      )
+    }
+  }
+
+  case read {
+    Ok(bits) -> {
+      let resp = response.set_body(resp, Bytes(bytes_tree.from_bit_array(bits)))
+      process.send(sender, Send(identifier, resp))
+    }
+    Error(reason) -> {
+      logging.log(
+        logging.Error,
+        "Failed to send file: " <> file.error_to_string(reason),
+      )
+      process.send(sender, Reset(identifier, frame.InternalError))
+    }
+  }
 }
 
 pub fn make_request(

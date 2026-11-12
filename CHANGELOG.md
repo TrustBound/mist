@@ -18,6 +18,7 @@
 - Support `server_sent_events` over HTTP/2
 - Support `chunked` responses over HTTP/2
 - Fix reading a file at its end returning an invalid value
+- Support `send_file` responses over HTTP/2
 
 # v6.0.3
 
