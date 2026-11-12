@@ -353,6 +353,7 @@ fn handle_frame(
           headers,
           conn,
           state.self,
+          end_stream,
           // fn(resp) { process.send(state.self, Send(identifier, resp)) },
         )
       process.send(new_stream.data, Ready)

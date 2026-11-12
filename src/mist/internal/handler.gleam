@@ -179,7 +179,7 @@ pub fn with_func(
               logging.log(logging.Warning, msg)
               Error(msg)
             }
-            http.InvalidBody -> {
+            http.InvalidBody | http.ExcessBody -> {
               let msg = "Received invalid HTTP body"
               logging.log(logging.Warning, msg)
               Error(msg)

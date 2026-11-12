@@ -5,7 +5,6 @@ import gleam/http.{type Header} as ghttp
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
 import gleam/int
-import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/pair
@@ -66,6 +65,7 @@ pub fn new(
   headers: List(Header),
   connection: Connection,
   sender: Subject(SendMessage),
+  end: Bool,
 ) -> Result(actor.Started(Subject(Message)), actor.StartError) {
   actor.new_with_initialiser(1000, fn(subject) {
     let data_selector =
@@ -80,23 +80,18 @@ pub fn new(
   |> actor.on_message(fn(state, msg) {
     case msg {
       Ready -> {
-        let content_length =
-          headers
-          |> list.key_find("content-length")
-          |> result.try(int.parse)
-          |> result.unwrap(0)
         let self = process.self()
         let conn =
           Connection(
             ..connection,
             body: Stream(
               selector: process.map_selector(state.data_selector, fn(val) {
-                let assert Data(bits, ..) = val
-                bits
+                let assert Data(bits, end) = val
+                #(bits, end)
               }),
               attempts: 0,
               data: <<>>,
-              remaining: content_length,
+              end: end,
               send_headers: fn(status, headers) {
                 process.send(sender, SendHeaders(identifier, status, headers))
               },

@@ -80,6 +80,7 @@ pub type DecodeError {
   UnknownMethod
   // TODO:  better name?
   InvalidBody
+  ExcessBody
   DiscardPacket
   NoHostHeader
   InvalidHttpVersion
@@ -385,9 +386,9 @@ pub fn parse_request(
 pub type Body {
   Initial(BitArray)
   Stream(
-    selector: Selector(BitArray),
+    selector: Selector(#(BitArray, Bool)),
     data: BitArray,
-    remaining: Int,
+    end: Bool,
     attempts: Int,
     send_headers: fn(Int, List(http.Header)) -> Nil,
     send_data: fn(BitArray) -> Result(Nil, Nil),
@@ -396,6 +397,7 @@ pub type Body {
 
 pub fn read_body(
   req: Request(Connection),
+  max_body_limit: Int,
 ) -> Result(Request(BitArray), DecodeError) {
   let transport = case req.scheme {
     http.Https -> transport.Ssl
@@ -442,38 +444,38 @@ pub fn read_body(
       Stream(
         selector: selector,
         data: data,
-        remaining: remaining,
+        end: False,
         attempts: attempts,
         send_headers: send_headers,
         send_data: send_data,
       )
-      if remaining > 0
     -> {
       let res =
         selector
         |> process.selector_receive(1000)
         |> result.replace_error(InvalidBody)
-      use next <- result.try(res)
-      let got = bit_array.byte_size(next)
-      let left = int.max(remaining - got, 0)
+      use #(next, end) <- result.try(res)
       let new_data = <<data:bits, next:bits>>
-      case left {
-        0 -> Ok(request.set_body(req, new_data))
-        _rem ->
-          read_body(request.set_body(
-            req,
-            Connection(
-              ..req.body,
-              body: Stream(
-                selector,
-                new_data,
-                left,
-                attempts + 1,
-                send_headers,
-                send_data,
+      case bit_array.byte_size(new_data) > max_body_limit {
+        True -> Error(ExcessBody)
+        False ->
+          read_body(
+            request.set_body(
+              req,
+              Connection(
+                ..req.body,
+                body: Stream(
+                  selector,
+                  new_data,
+                  end,
+                  attempts + 1,
+                  send_headers,
+                  send_data,
+                ),
               ),
             ),
-          ))
+            max_body_limit,
+          )
       }
     }
     _, Stream(data: data, ..) -> {

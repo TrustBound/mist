@@ -228,8 +228,13 @@ pub fn read_body(
   |> fn(content_length) {
     case content_length {
       value if value <= max_body_limit -> {
-        http.read_body(req)
-        |> result.replace_error(MalformedBody)
+        http.read_body(req, max_body_limit)
+        |> result.map_error(fn(error) {
+          case error {
+            http.ExcessBody -> ExcessBody
+            _ -> MalformedBody
+          }
+        })
       }
       _ -> {
         Error(ExcessBody)

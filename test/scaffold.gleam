@@ -177,7 +177,7 @@ pub fn chunked_echo_server(chunk_size: Int) {
     process.send(subject, Done)
   }
   fn(req: request.Request(mhttp.Connection)) {
-    let assert Ok(read_request) = mhttp.read_body(req)
+    let assert Ok(read_request) = mhttp.read_body(req, 4_000_000)
     let assert Ok(body) = bit_array.to_string(read_request.body)
     mist.chunked(
       req,

@@ -651,3 +651,50 @@ pub fn it_resets_streams_on_handler_errors_after_headers_test() {
 
   bitstring_response_should_equal(after, expected)
 }
+
+pub fn it_reads_bodies_without_content_length_test() {
+  let headers = [
+    #(":method", "POST"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, scaffold.default_handler)
+
+  let actual = scaffold.http2_request_with_body(headers, <<"0123456789":utf8>>)
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("host", "example.com:8080")
+    |> response.prepend_header("content-length", "10")
+    |> response.set_body(bytes_tree.from_bit_array(<<"0123456789":utf8>>))
+
+  bitstring_response_should_equal(actual, expected)
+}
+
+pub fn it_limits_bodies_without_content_length_test() {
+  let headers = [
+    #(":method", "POST"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, fn(req) {
+    case mist.read_body(req, 9) {
+      Ok(_req) -> response.new(200)
+      Error(_read_error) -> response.new(413)
+    }
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  })
+
+  let actual = scaffold.http2_request_with_body(headers, <<"0123456789":utf8>>)
+
+  let expected =
+    response.new(413)
+    |> response.prepend_header("content-length", "0")
+    |> response.set_body(bytes_tree.from_bit_array(<<>>))
+
+  bitstring_response_should_equal(actual, expected)
+}
