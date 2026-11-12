@@ -77,17 +77,26 @@ pub fn with_func(
               False -> {
                 resp
                 |> response.set_body(bytes)
-                |> http2.send_bytes_tree(
-                  conn,
+                |> http2.encode_response(
                   state.send_hpack_context,
                   id,
                   state.settings.max_frame_size,
                 )
-                |> result.try(fn(context) {
+                |> result.try(fn(pair) {
+                  let #(headers, context) = pair
                   let state = http2_handler.send_hpack_context(state, context)
                   case bytes_tree.to_bit_array(bytes) {
-                    <<>> -> Ok(http2_handler.close_stream(state, id))
-                    data -> http2_handler.send_data(state, conn, id, data, True)
+                    <<>> ->
+                      http2.send_encoded(conn, headers)
+                      |> result.replace(http2_handler.close_stream(state, id))
+                    data ->
+                      http2_handler.send_response(
+                        state,
+                        conn,
+                        id,
+                        headers,
+                        data,
+                      )
                   }
                 })
               }

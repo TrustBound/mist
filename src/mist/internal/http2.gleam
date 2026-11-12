@@ -65,8 +65,42 @@ pub fn send_headers(
   stream_identifier: StreamIdentifier(Frame),
   max_frame_size: Int,
 ) -> Result(HpackContext, String) {
-  hpack_encode(context, headers)
+  encode_headers(
+    context,
+    headers,
+    end_stream,
+    stream_identifier,
+    max_frame_size,
+  )
   |> result.try(fn(pair) {
+    let #(encoded, new_context) = pair
+    send_encoded(conn, encoded)
+    |> result.replace(new_context)
+  })
+}
+
+pub fn send_encoded(conn: Connection, encoded: BitArray) -> Result(Nil, String) {
+  case encoded {
+    <<>> -> Ok(Nil)
+    _ ->
+      transport.send(
+        conn.transport,
+        conn.socket,
+        bytes_tree.from_bit_array(encoded),
+      )
+      |> result.replace_error("Failed to send HTTP/2 headers")
+  }
+}
+
+pub fn encode_headers(
+  context: HpackContext,
+  headers: List(Header),
+  end_stream: Bool,
+  stream_identifier: StreamIdentifier(Frame),
+  max_frame_size: Int,
+) -> Result(#(BitArray, HpackContext), String) {
+  hpack_encode(context, headers)
+  |> result.map(fn(pair) {
     let #(headers, new_context) = pair
     let #(data, continuation) = case headers {
       <<data:bytes-size(max_frame_size), rest:bits>> if rest != <<>> -> #(
@@ -82,17 +116,7 @@ pub fn send_headers(
         identifier: stream_identifier,
         priority: None,
       )
-    let encoded = <<frame.encode(header_frame):bits, continuation:bits>>
-    case
-      transport.send(
-        conn.transport,
-        conn.socket,
-        bytes_tree.from_bit_array(encoded),
-      )
-    {
-      Ok(_nil) -> Ok(new_context)
-      Error(_reason) -> Error("Failed to send HTTP/2 headers")
-    }
+    #(<<frame.encode(header_frame):bits, continuation:bits>>, new_context)
   })
 }
 
@@ -120,37 +144,17 @@ fn encode_continuation(
 
 pub fn send_body(
   conn: Connection,
+  before: BitArray,
   data: BitArray,
   stream_identifier: StreamIdentifier(Frame),
   end_stream: Bool,
   max_frame_size: Int,
 ) -> Result(Nil, String) {
-  case data {
-    <<data:bytes-size(max_frame_size), rest:bits>> if rest != <<>> -> {
-      send_data(conn, data, stream_identifier, False)
-      |> result.try(fn(_nil) {
-        send_body(conn, rest, stream_identifier, end_stream, max_frame_size)
-      })
-    }
-    _ -> send_data(conn, data, stream_identifier, end_stream)
-  }
-}
+  let encoded =
+    bytes_tree.from_bit_array(before)
+    |> encode_body(data, stream_identifier, end_stream, max_frame_size)
 
-fn send_data(
-  conn: Connection,
-  data: BitArray,
-  stream_identifier: StreamIdentifier(Frame),
-  end_stream: Bool,
-) -> Result(Nil, String) {
-  let data_frame =
-    Data(data: data, end_stream: end_stream, identifier: stream_identifier)
-  let encoded = frame.encode(data_frame)
-
-  transport.send(
-    conn.transport,
-    conn.socket,
-    bytes_tree.from_bit_array(encoded),
-  )
+  transport.send(conn.transport, conn.socket, encoded)
   |> result.map_error(fn(err) {
     logging.log(
       logging.Debug,
@@ -158,6 +162,27 @@ fn send_data(
     )
     "Failed to send HTTP/2 data"
   })
+}
+
+fn encode_body(
+  encoded: BytesTree,
+  data: BitArray,
+  stream_identifier: StreamIdentifier(Frame),
+  end_stream: Bool,
+  max_frame_size: Int,
+) -> BytesTree {
+  case data {
+    <<data:bytes-size(max_frame_size), rest:bits>> if rest != <<>> -> {
+      Data(data: data, end_stream: False, identifier: stream_identifier)
+      |> frame.encode
+      |> bytes_tree.append(encoded, _)
+      |> encode_body(rest, stream_identifier, end_stream, max_frame_size)
+    }
+    _ ->
+      Data(data: data, end_stream: end_stream, identifier: stream_identifier)
+      |> frame.encode
+      |> bytes_tree.append(encoded, _)
+  }
 }
 
 pub fn send_frame(
@@ -170,13 +195,12 @@ pub fn send_frame(
   transport.send(transport, socket, bytes_tree.from_bit_array(data))
 }
 
-pub fn send_bytes_tree(
+pub fn encode_response(
   resp: Response(BytesTree),
-  conn: Connection,
   context: HpackContext,
   id: StreamIdentifier(Frame),
   max_frame_size: Int,
-) -> Result(HpackContext, String) {
+) -> Result(#(BitArray, HpackContext), String) {
   let resp =
     resp
     |> http.add_default_headers(False)
@@ -185,7 +209,7 @@ pub fn send_bytes_tree(
 
   let end_stream = bytes_tree.byte_size(resp.body) == 0
 
-  send_headers(context, conn, headers, end_stream, id, max_frame_size)
+  encode_headers(context, headers, end_stream, id, max_frame_size)
 }
 
 pub type HpackContext

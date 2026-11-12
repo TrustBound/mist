@@ -92,10 +92,31 @@ pub fn send_data(
   data: BitArray,
   end: Bool,
 ) -> Result(State, String) {
+  send_frames(state, conn, id, <<>>, data, end)
+}
+
+pub fn send_response(
+  state: State,
+  conn: Connection,
+  id: StreamIdentifier(Frame),
+  headers: BitArray,
+  data: BitArray,
+) -> Result(State, String) {
+  send_frames(state, conn, id, headers, data, True)
+}
+
+fn send_frames(
+  state: State,
+  conn: Connection,
+  id: StreamIdentifier(Frame),
+  before: BitArray,
+  data: BitArray,
+  end: Bool,
+) -> Result(State, String) {
   let queued =
     list.any(state.pending_sends, fn(pending) { pending.identifier == id })
   case dict.get(state.streams, id) {
-    Error(_nil) -> Ok(state)
+    Error(_nil) -> http2.send_encoded(conn, before) |> result.replace(state)
     Ok(stream) -> {
       let size =
         flow_control.compute_send_size(
@@ -110,6 +131,7 @@ pub fn send_data(
           let sent =
             http2.send_body(
               conn,
+              before,
               data,
               id,
               end_stream,
@@ -137,8 +159,9 @@ pub fn send_data(
           }
         }
         _, _ -> {
+          use _nil <- result.map(http2.send_encoded(conn, before))
           let pending = PendingSend(identifier: id, data: data, end: end)
-          Ok(State(..state, pending_sends: [pending, ..state.pending_sends]))
+          State(..state, pending_sends: [pending, ..state.pending_sends])
         }
       }
     }
