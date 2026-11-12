@@ -408,6 +408,10 @@ fn handle_frame(
     None, frame.Header(data: Continued(_data), ..) -> {
       Ok(State(..state, fragment: Some(frame)))
     }
+    None, frame.Continuation(..) -> {
+      let _ = send_go_away(state, conn, frame.ProtocolError)
+      Error("Received an HTTP/2 continuation without a header block")
+    }
     None, frame.WindowUpdate(amount, identifier) -> {
       case frame.get_stream_identifier(identifier) {
         0 -> {

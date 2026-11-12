@@ -31,6 +31,7 @@
 - Stop the HTTP/2 handler when its stream is reset
 - Cancel HTTP/2 `chunked` and `server_sent_events` sends that time out
 - Reject HTTP/2 requests that reuse a stream identifier
+- Close the HTTP/2 connection on `Continuation` without a header block
 
 # v6.0.3
 
