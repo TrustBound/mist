@@ -759,3 +759,38 @@ pub fn it_sends_go_away_on_frames_inside_headers_test() {
 
   bitstring_response_should_equal(actual, expected)
 }
+
+pub fn it_reads_bodies_ended_by_trailers_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let trailers = [#("x-checksum", "abc")]
+
+  use <- scaffold.open_server(8888, scaffold.default_handler)
+
+  let assert [_first, actual] =
+    scaffold.http2_requests([
+      #(<<>>, headers, <<>>),
+      #(
+        <<
+          0, 0, 66, 1, 4, 0, 0, 0, 3, 0, 7, ":method":utf8, 4, "POST":utf8, 0, 7,
+          ":scheme":utf8, 4, "http":utf8, 0, 10, ":authority":utf8, 16,
+          "example.com:8080":utf8, 0, 5, ":path":utf8, 1, "/":utf8, 0, 0, 10, 0,
+          0, 0, 0, 0, 3, "0123456789":utf8,
+        >>,
+        trailers,
+        <<>>,
+      ),
+    ])
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("host", "example.com:8080")
+    |> response.prepend_header("content-length", "10")
+    |> response.set_body(bytes_tree.from_bit_array(<<"0123456789":utf8>>))
+
+  bitstring_response_should_equal(actual, expected)
+}

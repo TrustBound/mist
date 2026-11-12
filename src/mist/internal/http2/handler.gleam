@@ -249,6 +249,37 @@ fn send_go_away(
   |> result.replace_error("Failed to send go away")
 }
 
+fn receive_trailers(
+  state: State,
+  conn: Connection,
+  context: HpackContext,
+  identifier: StreamIdentifier(Frame),
+  end_stream: Bool,
+  next: fn() -> Result(State, String),
+) -> Result(State, String) {
+  let state = State(..state, receive_hpack_context: context)
+  case dict.get(state.streams, identifier), end_stream {
+    Error(_nil), _ -> next()
+    Ok(stream.State(state: stream.RemoteClosed, ..)), _ ->
+      reset_stream(state, conn, identifier, frame.StreamClosed)
+    Ok(_stream), False ->
+      reset_stream(state, conn, identifier, frame.ProtocolError)
+    Ok(stream), True -> {
+      process.send(stream.subject, stream.Data(bits: <<>>, end: True))
+      let streams = case stream.state {
+        stream.LocalClosed -> dict.delete(state.streams, identifier)
+        _ ->
+          dict.insert(
+            state.streams,
+            identifier,
+            stream.State(..stream, state: stream.RemoteClosed),
+          )
+      }
+      Ok(State(..state, streams: streams))
+    }
+  }
+}
+
 fn handle_frame(
   frame: Frame,
   state: State,
@@ -346,6 +377,7 @@ fn handle_frame(
           "Failed to decode HTTP/2 headers"
         })
       use #(headers, context) <- result.try(decoded)
+      use <- receive_trailers(state, conn, context, identifier, end_stream)
 
       let pending_content_length =
         headers
