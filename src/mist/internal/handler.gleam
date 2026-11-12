@@ -16,6 +16,7 @@ import mist/internal/http.{
 }
 import mist/internal/http/handler as http_handler
 import mist/internal/http2
+import mist/internal/http2/frame
 import mist/internal/http2/handler as http2_handler
 import mist/internal/http2/stream.{
   type SendMessage, Reset, Send, SendData, SendHeaders,
@@ -69,23 +70,28 @@ pub fn with_func(
       }
       User(Send(id, resp)), Http2(state) -> {
         case resp.body {
-          Bytes(bytes) -> {
-            resp
-            |> response.set_body(bytes)
-            |> http2.send_bytes_tree(
-              conn,
-              state.send_hpack_context,
-              id,
-              state.settings.max_frame_size,
-            )
-            |> result.try(fn(context) {
-              let state = http2_handler.send_hpack_context(state, context)
-              case bytes_tree.to_bit_array(bytes) {
-                <<>> -> Ok(http2_handler.close_stream(state, id))
-                data -> http2_handler.send_data(state, conn, id, data, True)
+          Bytes(bytes) ->
+            case http2_handler.headers_sent(state, id) {
+              True ->
+                http2_handler.reset_stream(state, conn, id, frame.InternalError)
+              False -> {
+                resp
+                |> response.set_body(bytes)
+                |> http2.send_bytes_tree(
+                  conn,
+                  state.send_hpack_context,
+                  id,
+                  state.settings.max_frame_size,
+                )
+                |> result.try(fn(context) {
+                  let state = http2_handler.send_hpack_context(state, context)
+                  case bytes_tree.to_bit_array(bytes) {
+                    <<>> -> Ok(http2_handler.close_stream(state, id))
+                    data -> http2_handler.send_data(state, conn, id, data, True)
+                  }
+                })
               }
-            })
-          }
+            }
           File(..) -> Error("File sending unsupported over HTTP/2")
           // TODO:  properly error in some fashion for these
           Websocket -> Error("WebSocket unsupported for HTTP/2")
@@ -110,7 +116,10 @@ pub fn with_func(
           state.settings.max_frame_size,
         )
         |> result.map(fn(context) {
-          Http2(http2_handler.send_hpack_context(state, context))
+          state
+          |> http2_handler.send_hpack_context(context)
+          |> http2_handler.set_headers_sent(id)
+          |> Http2
         })
         |> result.map_error(Error)
       }

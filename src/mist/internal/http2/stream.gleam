@@ -1,3 +1,4 @@
+import exception
 import gleam/bytes_tree
 import gleam/erlang/process.{type Selector, type Subject}
 import gleam/http.{type Header} as ghttp
@@ -51,6 +52,7 @@ pub type State {
     receive_window_size: Int,
     send_window_size: Int,
     pending_content_length: Option(Int),
+    headers_sent: Bool,
   )
 }
 
@@ -119,7 +121,21 @@ pub fn new(
         case result {
           Ok(value) -> {
             let resp = case parse_host(value) {
-              Ok(req) -> handler(req)
+              Ok(req) ->
+                case exception.rescue(fn() { handler(req) }) {
+                  Ok(resp) -> resp
+                  Error(error) -> {
+                    logging.log(logging.Error, string.inspect(error))
+                    response.new(500)
+                    |> response.set_body(
+                      Bytes(
+                        bytes_tree.from_bit_array(<<
+                          "Internal Server Error":utf8,
+                        >>),
+                      ),
+                    )
+                  }
+                }
               Error(_nil) -> {
                 logging.log(logging.Debug, "Missing HTTP `host` header")
                 response.new(400)

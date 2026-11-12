@@ -559,3 +559,95 @@ pub fn it_sends_empty_file_responses_test() {
 
   bitstring_response_should_equal(actual, expected)
 }
+
+pub fn it_responds_with_500_on_handler_errors_test() {
+  let failing = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/fail"),
+  ]
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, fn(req) {
+    case request.path_segments(req) {
+      ["fail"] -> panic as "handler failed"
+      _ -> scaffold.uri_echo_handler(req)
+    }
+  })
+
+  let assert [actual, after] =
+    scaffold.http2_requests([#(<<>>, failing, <<>>), #(<<>>, headers, <<>>)])
+
+  let expected =
+    response.new(500)
+    |> response.prepend_header("content-length", "21")
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<"Internal Server Error":utf8>>),
+    )
+
+  bitstring_response_should_equal(actual, expected)
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "28")
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<"GET http://example.com:8080/":utf8>>),
+    )
+
+  bitstring_response_should_equal(after, expected)
+}
+
+pub fn it_resets_streams_on_handler_errors_after_headers_test() {
+  let failing = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/fail"),
+  ]
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, fn(req) {
+    case request.path_segments(req) {
+      ["fail"] -> {
+        let _response =
+          mist.chunked(
+            req,
+            response.new(200),
+            init: fn(subj) { process.send(subj, Nil) },
+            loop: fn(_state, _message, _conn) { mist.chunk_stop() },
+          )
+        panic as "handler failed"
+      }
+      _ -> scaffold.uri_echo_handler(req)
+    }
+  })
+
+  let assert [actual, after] =
+    scaffold.http2_requests([#(<<>>, failing, <<>>), #(<<>>, headers, <<>>)])
+
+  let expected =
+    response.new(200)
+    |> response.set_body(bytes_tree.from_bit_array(<<>>))
+
+  bitstring_response_should_equal(actual, expected)
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "28")
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<"GET http://example.com:8080/":utf8>>),
+    )
+
+  bitstring_response_should_equal(after, expected)
+}

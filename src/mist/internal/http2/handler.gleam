@@ -56,6 +56,23 @@ pub fn close_stream(state: State, id: StreamIdentifier(Frame)) -> State {
   }
 }
 
+pub fn headers_sent(state: State, id: StreamIdentifier(Frame)) -> Bool {
+  state.streams
+  |> dict.get(id)
+  |> result.map(fn(stream) { stream.headers_sent })
+  |> result.unwrap(False)
+}
+
+pub fn set_headers_sent(state: State, id: StreamIdentifier(Frame)) -> State {
+  case dict.get(state.streams, id) {
+    Ok(stream) -> {
+      let new_stream = stream.State(..stream, headers_sent: True)
+      State(..state, streams: dict.insert(state.streams, id, new_stream))
+    }
+    Error(_nil) -> state
+  }
+}
+
 pub fn reset_stream(
   state: State,
   conn: Connection,
@@ -328,6 +345,7 @@ fn handle_frame(
           receive_window_size: 65_535,
           send_window_size: state.settings.initial_window_size,
           pending_content_length: pending_content_length,
+          headers_sent: False,
         )
       let streams = dict.insert(state.streams, identifier, stream_state)
       Ok(
