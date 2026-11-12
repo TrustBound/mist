@@ -572,6 +572,9 @@ fn update_window(
   }
 }
 
+@external(erlang, "file", "read_file")
+pub fn read_file(path: String) -> Result(BitArray, anything)
+
 @external(erlang, "gen_tcp", "connect")
 fn gen_tcp_connect(
   host host: atom.Atom,

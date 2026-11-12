@@ -527,10 +527,12 @@ pub fn it_sends_file_responses_test() {
   let assert [actual, after] =
     scaffold.http2_requests([#(<<>>, headers, <<>>), #(<<>>, headers, <<>>)])
 
+  let assert Ok(<<_offset:bytes-size(8), body:bytes-size(4), _rest:bits>>) =
+    scaffold.read_file("gleam.toml")
   let expected =
     response.new(200)
     |> response.prepend_header("content-length", "4")
-    |> response.set_body(bytes_tree.from_bit_array(<<"mist":utf8>>))
+    |> response.set_body(bytes_tree.from_bit_array(body))
 
   bitstring_response_should_equal(actual, expected)
   bitstring_response_should_equal(after, expected)
