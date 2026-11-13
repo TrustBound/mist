@@ -2,10 +2,18 @@
 
 # dream_http_server 1.0.0
 
-First release of the dream_http_server fork: mist 6.0.3 plus the HTTP/2
-fixes listed under "Unreleased" below.
+First release of the dream_http_server fork. It is mist 6.0.3 with the
+changes below and nothing else.
 
-# Unreleased
+Package changes:
+
+- The package is named `dream_http_server`. The modules keep their names
+  (`mist`, `mist/internal/...`)
+- Depend on `dream_socket_server` in place of `glisten`
+- Add `test/dream_http_server_test.gleam` so that `gleam test` runs the
+  existing tests under the new package name
+
+Changes to mist, each its own commit on the branch `http2-review-fixes`:
 
 - Read remaining request data before closing so the response is not lost to a
   connection reset
