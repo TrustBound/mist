@@ -345,3 +345,45 @@ pub fn it_ends_chunked_responses_without_an_error_response_test() {
 
   assert error_responses == []
 }
+
+fn selector_event_handler(
+  others: process.Subject(process.Subject(String)),
+) -> fn(request.Request(mist.Connection)) ->
+  response.Response(mist.ResponseData) {
+  fn(req) {
+    mist.server_sent_events_with_selector(
+      req,
+      response.new(200),
+      init: fn(_subj) {
+        let other = process.new_subject()
+        process.send(others, other)
+        #(Nil, Some(process.new_selector() |> process.select(other)))
+      },
+      loop: fn(_state, message, conn) {
+        let assert Ok(_nil) =
+          mist.send_event(conn, mist.event(string_tree.from_string(message)))
+        actor.stop()
+      },
+    )
+  }
+}
+
+pub fn it_sends_server_sent_events_from_the_init_selector_test() {
+  let others = process.new_subject()
+
+  use <- scaffold.start_server(
+    mist.new(selector_event_handler(others))
+    |> mist.port(8888),
+  )
+
+  let socket =
+    scaffold.http1_open(<<"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n":utf8>>)
+  let assert Ok(other) = process.receive(others, 1000)
+  process.send(other, "from the selector")
+  let received =
+    scaffold.http1_receive_until_closed(socket, <<>>)
+    |> bit_array.to_string
+    |> result.unwrap("")
+
+  assert string.contains(received, "data: from the selector\n\n")
+}

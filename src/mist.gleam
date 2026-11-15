@@ -936,6 +936,24 @@ pub fn server_sent_events(
   init init: fn(Subject(message)) -> state,
   loop loop: fn(state, message, SSEConnection) -> actor.Next(state, message),
 ) -> Response(ResponseData) {
+  server_sent_events_with_selector(
+    req,
+    resp,
+    fn(subj) { #(init(subj), option.None) },
+    loop,
+  )
+}
+
+/// Like `server_sent_events`, but `init` can also return a selector. The SSE
+/// process then receives the messages that selector selects, as well as the
+/// messages sent to its subject. Use it to receive messages from other parts
+/// of your application, such as a pub/sub topic.
+pub fn server_sent_events_with_selector(
+  request req: Request(Connection),
+  initial_response resp: Response(discard),
+  init init: fn(Subject(message)) -> #(state, Option(Selector(message))),
+  loop loop: fn(state, message, SSEConnection) -> actor.Next(state, message),
+) -> Response(ResponseData) {
   case req.body.body {
     http.Initial(_data) -> http1_server_sent_events(req, resp, init, loop)
     http.Stream(send_headers: send_headers, close_after: close_after, ..) ->
@@ -943,10 +961,21 @@ pub fn server_sent_events(
   }
 }
 
+fn sse_selector(
+  subj: Subject(message),
+  selector: Option(Selector(message)),
+) -> Selector(message) {
+  let own = process.new_selector() |> process.select(subj)
+  case selector {
+    option.Some(selector) -> process.merge_selector(own, selector)
+    option.None -> own
+  }
+}
+
 fn http1_server_sent_events(
   req: Request(Connection),
   resp: Response(discard),
-  init: fn(Subject(message)) -> state,
+  init: fn(Subject(message)) -> #(state, Option(Selector(message))),
   loop: fn(state, message, SSEConnection) -> actor.Next(state, message),
 ) -> Response(ResponseData) {
   let with_default_headers =
@@ -965,10 +994,11 @@ fn http1_server_sent_events(
     Ok(_nil) -> {
       let start = fn() {
         actor.new_with_initialiser(1000, fn(subj) {
-          init(subj)
+          let #(state, selector) = init(subj)
+          state
           |> actor.initialised
           |> actor.returning(process.self())
-          |> actor.selecting(process.new_selector() |> process.select(subj))
+          |> actor.selecting(sse_selector(subj, selector))
           |> Ok
         })
         |> actor.on_message(fn(state, message) {
@@ -1012,7 +1042,7 @@ fn http1_server_sent_events(
 fn http2_server_sent_events(
   req: Request(Connection),
   resp: Response(discard),
-  init: fn(Subject(message)) -> state,
+  init: fn(Subject(message)) -> #(state, Option(Selector(message))),
   loop: fn(state, message, SSEConnection) -> actor.Next(state, message),
   send_headers: fn(Int, List(gleam_http.Header)) -> Nil,
   close_after: fn(process.Pid) -> Nil,
@@ -1026,10 +1056,11 @@ fn http2_server_sent_events(
 
   let start = fn() {
     actor.new_with_initialiser(1000, fn(subj) {
-      init(subj)
+      let #(state, selector) = init(subj)
+      state
       |> actor.initialised
       |> actor.returning(process.self())
-      |> actor.selecting(process.new_selector() |> process.select(subj))
+      |> actor.selecting(sse_selector(subj, selector))
       |> Ok
     })
     |> actor.on_message(fn(state, message) {

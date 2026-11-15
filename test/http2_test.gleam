@@ -2235,3 +2235,45 @@ pub fn it_streams_request_bodies_into_chunked_responses_test() {
 
   assert process.receive(read, 5000) == Ok([30_000, 10_000])
 }
+
+pub fn it_sends_server_sent_events_from_the_init_selector_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let others = process.new_subject()
+
+  use <- scaffold.open_server(8888, fn(req) {
+    mist.server_sent_events_with_selector(
+      req,
+      response.new(200),
+      init: fn(_subj) {
+        let other = process.new_subject()
+        process.send(others, other)
+        #(Nil, Some(process.new_selector() |> process.select(other)))
+      },
+      loop: fn(_state, message, conn) {
+        let assert Ok(_nil) =
+          mist.send_event(conn, mist.event(string_tree.from_string(message)))
+        actor.stop()
+      },
+    )
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  let assert Ok(other) = process.receive(others, 1000)
+  process.send(other, "from the selector")
+  process.sleep(100)
+  let data =
+    stream_frames(scaffold.http2_receive(socket), 1)
+    |> list.filter_map(fn(received) {
+      case received {
+        frame.Data(data: data, ..) -> Ok(data)
+        _frame -> Error(Nil)
+      }
+    })
+
+  assert list.first(data) == Ok(<<"data: from the selector\n\n":utf8>>)
+}
