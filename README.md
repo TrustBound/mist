@@ -6,7 +6,7 @@
 
 ## Why this package exists
 
-mist is the web server that Dream runs on. It is written by Alex Manning (rawhat) and its contributors, and it has given a great deal to us and to the rest of the Gleam community. This package is not a replacement for it and not a judgement of it.
+Dream's server adapter is built on mist. mist is written by Alex Manning (rawhat) and its contributors, who have given a great deal to us and to the rest of the Gleam community. This package is not a replacement for mist and not a judgement of it.
 
 We publish this fork for four reasons.
 
