@@ -2,14 +2,25 @@
 
 # dream_http_server 1.1.0
 
-One more change to mist, its own commit on the branch `http2-review-fixes`:
+Four more changes to mist, each its own commit on the branch
+`http2-review-fixes`:
 
 - Offer HTTP/2 in the TLS handshake (ALPN) when TLS is on. Clients that ask
   for `h2` get HTTP/2, and the rest get HTTP/1.1. Before this, TLS clients,
   browsers included, always got HTTP/1.1
+- Stream HTTP/2 request bodies with `stream`, which crashed on every HTTP/2
+  request
+- Forward HTTP/2 request bodies to `chunked` and `server_sent_events`
+  responses, which run in their own process and got no body data
+- Let `chunked` and `server_sent_events` processes stop before they take the
+  socket. The hand-over then failed, and a 500 response was written after
+  the body
 
-Tests: 93 run, 0 failed. Mac: Apple M1 Max, 10 cores, 64 GB, macOS 26.5.1,
-OTP 29, Gleam 1.17.0, about 3.5 seconds, 6 of 6 runs passed. Linux: the
+A test also checks that a request with `Upgrade: h2c` gets an HTTP/1.1
+answer: the upgrade is deprecated by RFC 9113 and allows h2c smuggling.
+
+Tests: 98 run, 0 failed. Mac: Apple M1 Max, 10 cores, 64 GB, macOS 26.5.1,
+OTP 29, Gleam 1.17.0, about 4 seconds, 3 of 3 runs passed. Linux: the
 mist CI steps in Ubuntu 24.04 (aarch64, Docker), OTP 28.0, Gleam 1.14.0,
 format check passed, 6 of 6 runs passed.
 
