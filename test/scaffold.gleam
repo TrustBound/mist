@@ -499,6 +499,16 @@ pub fn http1_receive(socket: Socket) -> BitArray {
   received
 }
 
+pub fn http1_receive_until_closed(
+  socket: Socket,
+  received: BitArray,
+) -> BitArray {
+  case tcp.receive_timeout(socket, 0, 5000) {
+    Ok(data) -> http1_receive_until_closed(socket, <<received:bits, data:bits>>)
+    Error(_closed) -> received
+  }
+}
+
 pub fn http1_send(socket: Socket, data: BitArray) -> Result(Nil, SocketReason) {
   data
   |> bytes_tree.from_bit_array

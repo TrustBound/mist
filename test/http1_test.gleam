@@ -4,8 +4,12 @@ import gleam/erlang/process
 import gleam/http
 import gleam/http/request
 import gleam/http/response.{type Response, Response}
+import gleam/list
 import gleam/option.{Some}
+import gleam/otp/actor
+import gleam/result
 import gleam/string
+import gleam/string_tree
 import gleam/uri
 import mist
 import scaffold.{
@@ -263,4 +267,81 @@ pub fn it_times_out_slow_request_bodies_test() {
   let assert Ok(result) = process.receive(read, 1000)
 
   assert result == Error(mist.MalformedBody)
+}
+
+fn stop_after_one_event_handler(
+  req: request.Request(mist.Connection),
+) -> response.Response(mist.ResponseData) {
+  mist.server_sent_events(
+    req,
+    response.new(200),
+    init: fn(subj) { process.send(subj, "only") },
+    loop: fn(state, message, conn) {
+      let assert Ok(_nil) =
+        mist.send_event(conn, mist.event(string_tree.from_string(message)))
+      let _state = state
+      actor.stop()
+    },
+  )
+}
+
+pub fn it_ends_server_sent_events_without_an_error_response_test() {
+  use <- scaffold.start_server(
+    mist.new(stop_after_one_event_handler)
+    |> mist.port(8888),
+  )
+
+  let responses =
+    list.repeat(Nil, 30)
+    |> list.map(fn(_nil) {
+      scaffold.http1_open(<<"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n":utf8>>)
+      |> scaffold.http1_receive_until_closed(<<>>)
+    })
+
+  let error_responses =
+    list.filter(responses, fn(received) {
+      received
+      |> bit_array.to_string
+      |> result.unwrap("")
+      |> string.contains("HTTP/1.1 500")
+    })
+
+  assert error_responses == []
+}
+
+fn stop_after_one_chunk_handler(
+  req: request.Request(mist.Connection),
+) -> response.Response(mist.ResponseData) {
+  mist.chunked(
+    req,
+    response.new(200),
+    init: fn(subj) { process.send(subj, <<"only":utf8>>) },
+    loop: fn(_state, message, conn) {
+      let assert Ok(_nil) = mist.send_chunk(conn, message)
+      mist.chunk_stop()
+    },
+  )
+}
+
+pub fn it_ends_chunked_responses_without_an_error_response_test() {
+  use <- scaffold.start_server(
+    mist.new(stop_after_one_chunk_handler)
+    |> mist.port(8888),
+  )
+
+  let responses =
+    list.repeat(Nil, 30)
+    |> list.map(fn(_nil) {
+      scaffold.http1_open(<<"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n":utf8>>)
+      |> scaffold.http1_receive_until_closed(<<>>)
+    })
+  let error_responses =
+    list.filter(responses, fn(received) {
+      received
+      |> bit_array.to_string
+      |> result.unwrap("")
+      |> string.contains("HTTP/1.1 500")
+    })
+
+  assert error_responses == []
 }

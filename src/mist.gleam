@@ -983,7 +983,10 @@ fn http1_server_sent_events(
       let factory_supervisor = factory.get_by_name(req.body.factory_name)
       case factory.start_child(factory_supervisor, start) {
         Ok(started) -> {
-          let assert Ok(_nil) =
+          // The process can finish its events and stop before it gets the
+          // socket. The hand-over then fails, and the connection closes the
+          // socket itself.
+          let _handed_over =
             transport.controlling_process(
               req.body.transport,
               req.body.socket,
@@ -1157,7 +1160,9 @@ fn http1_chunked(
 
   case factory.start_child(factory_supervisor, start) {
     Ok(started) -> {
-      let assert Ok(_controlled) =
+      // The process can finish its chunks and stop before it gets the socket.
+      // The hand-over then fails, and the connection closes the socket itself.
+      let _handed_over =
         transport.controlling_process(
           req.body.transport,
           req.body.socket,
