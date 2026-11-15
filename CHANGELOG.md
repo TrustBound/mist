@@ -1,5 +1,18 @@
 # Changelog
 
+# dream_http_server 1.1.0
+
+One more change to mist, its own commit on the branch `http2-review-fixes`:
+
+- Offer HTTP/2 in the TLS handshake (ALPN) when TLS is on. Clients that ask
+  for `h2` get HTTP/2, and the rest get HTTP/1.1. Before this, TLS clients,
+  browsers included, always got HTTP/1.1
+
+Tests: 93 run, 0 failed. Mac: Apple M1 Max, 10 cores, 64 GB, macOS 26.5.1,
+OTP 29, Gleam 1.17.0, about 3.5 seconds, 6 of 6 runs passed. Linux: the
+mist CI steps in Ubuntu 24.04 (aarch64, Docker), OTP 28.0, Gleam 1.14.0,
+format check passed, 6 of 6 runs passed.
+
 # dream_http_server 1.0.0
 
 First release of the dream_http_server fork. It is mist 6.0.3 with the
