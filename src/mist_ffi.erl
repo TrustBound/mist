@@ -2,7 +2,7 @@
 
 -export([binary_match/2, decode_packet/3, decode_atom/1,file_open/1, string_to_int/2, hpack_decode/2,
          hpack_encode/2, hpack_new_max_table_size/2, ets_lookup_element/3, get_path_and_query/1,
-         file_close/1, file_pread/3, now/0]).
+         file_close/1, file_pread/3, now/0, forward/3]).
 
 now() ->
   Timestamp = os:system_time(microsecond),
@@ -129,3 +129,9 @@ get_path_and_query(String) ->
 
 decode_atom(Value) when is_atom(Value) -> {ok, Value};
 decode_atom(_Value) -> {error, nil}.
+
+%% Sends Message to Pid tagged as if it were sent to Subject, so a selector on
+%% Subject matches it in Pid's mailbox.
+forward({subject, _Owner, Tag}, Pid, Message) ->
+  Pid ! {Tag, Message},
+  nil.

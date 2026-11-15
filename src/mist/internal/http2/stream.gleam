@@ -60,7 +60,7 @@ pub type State {
 }
 
 pub type InternalState {
-  InternalState(data_selector: Selector(Message))
+  InternalState(subject: Subject(Message), data_selector: Selector(Message))
 }
 
 pub fn new(
@@ -76,7 +76,7 @@ pub fn new(
     let data_selector =
       process.new_selector()
       |> process.select(subject)
-    InternalState(data_selector)
+    InternalState(subject, data_selector)
     |> actor.initialised
     |> actor.selecting(data_selector)
     |> actor.returning(subject)
@@ -150,7 +150,7 @@ pub fn new(
             case resp.body {
               File(..) -> send_file_body(sender, identifier, resp)
               Chunked | ServerSentEvents -> {
-                wait_for_responder(responder)
+                wait_for_responder(responder, state)
                 process.send(sender, Send(identifier, resp))
               }
               _ -> process.send(sender, Send(identifier, resp))
@@ -196,17 +196,40 @@ fn send_data(
   reply
 }
 
-fn wait_for_responder(responder: Subject(Pid)) -> Nil {
+/// Waits until the process that streams the response ends. While it runs, the
+/// request body may still arrive. That process reads the body through the
+/// request's selector, which only matches messages in its own mailbox, so
+/// each `Data` message is forwarded to it.
+fn wait_for_responder(responder: Subject(Pid), state: InternalState) -> Nil {
   case process.receive(responder, 0) {
     Ok(pid) -> {
       let monitor = process.monitor(pid)
       process.new_selector()
-      |> process.select_specific_monitor(monitor, fn(_down) { Nil })
-      |> process.selector_receive_forever
+      |> process.select_specific_monitor(monitor, fn(_down) { Error(Nil) })
+      |> process.merge_selector(process.map_selector(state.data_selector, Ok))
+      |> forward_data(pid, state.subject)
     }
     Error(_nil) -> Nil
   }
 }
+
+fn forward_data(
+  selector: Selector(Result(Message, Nil)),
+  pid: Pid,
+  subject: Subject(Message),
+) -> Nil {
+  case process.selector_receive_forever(selector) {
+    Ok(message) -> {
+      forward(subject, pid, message)
+      forward_data(selector, pid, subject)
+    }
+    Error(Nil) -> Nil
+  }
+}
+
+/// Sends `message` to `pid` as if it were sent to `subject`.
+@external(erlang, "mist_ffi", "forward")
+fn forward(subject: Subject(Message), pid: Pid, message: Message) -> Nil
 
 fn send_file_body(
   sender: Subject(SendMessage),

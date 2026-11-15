@@ -2196,3 +2196,42 @@ fn read_stream_sizes(
     Error(_reason) -> list.reverse([-1, ..sizes])
   }
 }
+
+pub fn it_streams_request_bodies_into_chunked_responses_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let read = process.new_subject()
+
+  use <- scaffold.open_server(8888, fn(req) {
+    case req.method {
+      http.Get ->
+        response.new(200)
+        |> response.set_body(mist.Bytes(bytes_tree.new()))
+      _method -> {
+        let assert Ok(consume) = mist.stream(req)
+        mist.chunked(
+          req,
+          response.new(200),
+          init: fn(subj) {
+            process.send(subj, Nil)
+            consume
+          },
+          loop: fn(consume, _message, _conn) {
+            process.send(read, read_stream_sizes(consume, 30_000, []))
+            mist.chunk_stop()
+          },
+        )
+      }
+    }
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  scaffold.http2_send(socket, post_headers(3))
+  scaffold.http2_send_body(socket, 3, <<0:size(320_000)>>)
+
+  assert process.receive(read, 5000) == Ok([30_000, 10_000])
+}
