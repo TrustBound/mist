@@ -10,7 +10,7 @@ Dream's server adapter is built on mist. mist is written by Alex Manning (rawhat
 
 We publish this fork for four reasons.
 
-1. **Dream needed many fixes, not one.** HTTP/2 in mist 6.0.3 was not finished. Requests with a body got no response, every request left a process behind, large responses stalled, and several kinds of client input closed or crashed the whole connection. Making HTTP/2 correct for Dream took 46 changes, in 51 commits. They are listed below under "What is different from mist 6.0.3", and each one is on the branch `http2-review-fixes`.
+1. **Dream needed many fixes, not one.** HTTP/2 in mist 6.0.3 was not finished. Requests with a body got no response, every request left a process behind, large responses stalled, and several kinds of client input closed or crashed the whole connection. Making HTTP/2 correct for Dream took 47 changes, in 52 commits. They are listed below under "What is different from mist 6.0.3", and each one is on the branch `http2-review-fixes`.
 2. **Giving that many changes back takes a long time.** Each change has to go upstream as its own small pull request, in the maintainer's style, and be reviewed and released on the maintainer's schedule. That is the right way to do it, and it cannot be hurried. We intend to send every one of them.
 3. **Dream could not wait any longer.** This version of Dream has already been delayed too long, and its users need the fixes now.
 4. **Hex and Gleam leave no other way to ship a fixed dependency.** A Hex package may depend only on other Hex packages, so Dream cannot depend on a git fork or a local path. A Gleam package is built only from the real files in its own `src/` folder, so Dream cannot use a git submodule as its source either: we tested it, and the published package comes out with the files in the wrong place. The choices left were to copy mist's source into Dream, or to publish the fork as its own package. Publishing the fork keeps mist's code, history and licence in one place, apart from Dream's.
@@ -91,6 +91,7 @@ To see every changed line, compare the branch with the upstream release:
 - Stream HTTP/2 request bodies with `stream`
 - Forward HTTP/2 request bodies to `chunked` and `server_sent_events` responses
 - Let `chunked` and `server_sent_events` processes stop before they take the socket
+- Add `server_sent_events_with_selector`
 
 ## Licence and credit
 

@@ -1,5 +1,19 @@
 # Changelog
 
+# dream_http_server 1.2.0
+
+One more change to mist:
+
+- Add `server_sent_events_with_selector`. Its `init` returns the state and an
+  optional selector, so the server-sent events process can receive messages
+  from other parts of the application. mist 5 allowed this and mist 6
+  dropped it. `server_sent_events` is unchanged
+
+Tests: 100 run, 0 failed. Mac: Apple M1 Max, 10 cores, 64 GB, macOS 26.5.1,
+OTP 29, Gleam 1.17.0, about 3.5 seconds, 3 of 3 runs passed. Linux: the
+mist CI steps in Ubuntu 24.04 (aarch64, Docker), OTP 28.0, Gleam 1.14.0,
+format check passed, 6 of 6 runs passed.
+
 # dream_http_server 1.1.0
 
 Four more changes to mist, each its own commit:
