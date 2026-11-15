@@ -2101,3 +2101,20 @@ pub fn it_serves_http1_over_tls_test() {
 
   let assert <<"HTTP/1.1 200 OK\r\n":utf8, _rest:bits>> = actual
 }
+
+pub fn it_does_not_upgrade_requests_to_h2c_test() {
+  use <- scaffold.open_server(8888, scaffold.uri_echo_handler)
+
+  let socket =
+    scaffold.http1_open(<<
+      "GET /some/path HTTP/1.1\r\n":utf8,
+      "host: localhost:8888\r\n":utf8,
+      "connection: Upgrade, HTTP2-Settings\r\n":utf8,
+      "upgrade: h2c\r\n":utf8,
+      "http2-settings: AAMAAABk\r\n\r\n":utf8,
+    >>)
+  let assert <<status:bytes-size(17), _rest:bits>> =
+    scaffold.http1_receive(socket)
+
+  assert status == <<"HTTP/1.1 200 OK\r\n":utf8>>
+}

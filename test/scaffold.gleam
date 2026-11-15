@@ -494,6 +494,11 @@ pub fn http1_open(data: BitArray) -> Socket {
   socket
 }
 
+pub fn http1_receive(socket: Socket) -> BitArray {
+  let assert Ok(received) = tcp.receive_timeout(socket, 0, 5000)
+  received
+}
+
 pub fn http1_send(socket: Socket, data: BitArray) -> Result(Nil, SocketReason) {
   data
   |> bytes_tree.from_bit_array
