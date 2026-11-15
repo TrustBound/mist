@@ -635,6 +635,7 @@ pub fn start(
           Some(CertKeyFiles(certfile, keyfile)) ->
             handler
             |> glisten.with_tls(certfile, keyfile)
+            |> glisten.with_http2
           _ -> handler
         }
       }

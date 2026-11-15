@@ -20,8 +20,9 @@ import glisten
 import glisten/internal/handler as glisten_handler
 import glisten/socket.{type ListenSocket, type Socket, type SocketReason, Closed}
 import glisten/socket/options
+import glisten/ssl
 import glisten/tcp
-import glisten/transport.{Tcp}
+import glisten/transport.{type Transport, Ssl, Tcp}
 import mist
 import mist/internal/handler
 import mist/internal/http.{type Connection} as mhttp
@@ -373,10 +374,80 @@ pub fn http2_requests(
   >>
 
   let responses =
-    send_requests(socket, requests, preface, 1, context, context, <<>>, 65_535)
+    send_requests(
+      Tcp,
+      socket,
+      requests,
+      preface,
+      1,
+      context,
+      context,
+      <<>>,
+      65_535,
+    )
   let assert Ok(_nil) = tcp.close(socket)
 
   responses
+}
+
+pub fn start_tls_server(
+  with builder: mist.Builder(Connection, mist.ResponseData),
+  after perform: fn() -> return,
+) -> return {
+  let #(certfile, keyfile) = write_certificate("build/test_tls")
+  builder
+  |> mist.port(8888)
+  |> mist.with_tls(certfile:, keyfile:)
+  |> start_server(perform)
+}
+
+pub fn tls_connect(protocols: List(String)) -> Socket {
+  let assert Ok(socket) = tls_connect_port(8888, protocols)
+  socket
+}
+
+pub fn tls_negotiated_protocol(socket: Socket) -> Result(String, String) {
+  ssl.negotiated_protocol(socket)
+}
+
+pub fn http2_tls_requests(
+  socket: Socket,
+  requests: List(#(BitArray, List(#(String, String)), BitArray)),
+) -> List(Response(BitArray)) {
+  let assert Ok("h2") = ssl.negotiated_protocol(socket)
+  let initial_settings = http2.default_settings()
+  let context = http2.hpack_new_context(initial_settings.header_table_size)
+  let settings_frame = frame.Settings(ack: False, settings: [])
+  let preface = <<
+    "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n":utf8,
+    frame.encode(settings_frame):bits,
+  >>
+
+  let responses =
+    send_requests(
+      Ssl,
+      socket,
+      requests,
+      preface,
+      1,
+      context,
+      context,
+      <<>>,
+      65_535,
+    )
+  let assert Ok(_nil) = ssl.close(socket)
+
+  responses
+}
+
+pub fn http1_tls_request(socket: Socket, data: BitArray) -> BitArray {
+  let assert Ok(_nil) =
+    data
+    |> bytes_tree.from_bit_array
+    |> ssl.send(socket, _)
+  let assert Ok(received) = ssl.receive_timeout(socket, 0, 5000)
+  let assert Ok(_nil) = ssl.close(socket)
+  received
 }
 
 pub fn http2_open(
@@ -459,7 +530,7 @@ pub fn http2_send_padded(
 
 pub fn http2_receive(socket: Socket) -> List(Frame) {
   http2_send(socket, frame.Ping(ack: False, data: <<0:64>>))
-  receive_until_ping(socket, <<>>)
+  receive_until_ping(Tcp, socket, <<>>)
 }
 
 pub fn http2_send_body(socket: Socket, identifier: Int, body: BitArray) -> Nil {
@@ -481,7 +552,7 @@ fn send_body(
   case body, size {
     <<>>, _size -> Nil
     _body, 0 -> {
-      let #(received, rest) = receive_frame(socket, data)
+      let #(received, rest) = receive_frame(Tcp, socket, data)
       let window = case received {
         frame.WindowUpdate(amount: amount, identifier: stream)
           if stream == identifier
@@ -506,14 +577,22 @@ fn send_body(
   }
 }
 
-fn receive_until_ping(socket: Socket, data: BitArray) -> List(Frame) {
-  case receive_frame(socket, data) {
+fn receive_until_ping(
+  transport: Transport,
+  socket: Socket,
+  data: BitArray,
+) -> List(Frame) {
+  case receive_frame(transport, socket, data) {
     #(frame.Ping(ack: True, ..), _rest) -> []
-    #(received, rest) -> [received, ..receive_until_ping(socket, rest)]
+    #(received, rest) -> [
+      received,
+      ..receive_until_ping(transport, socket, rest)
+    ]
   }
 }
 
 fn send_requests(
+  transport: Transport,
   socket: Socket,
   requests: List(#(BitArray, List(#(String, String)), BitArray)),
   preface: BitArray,
@@ -562,9 +641,10 @@ fn send_requests(
         |> bit_array.append(continuation)
         |> bit_array.append(body_frame)
         |> bytes_tree.from_bit_array
-        |> tcp.send(socket, _)
+        |> transport.send(transport, socket, _)
       let #(resp, decode_context, rest, window) =
         receive_response(
+          transport,
           socket,
           rest,
           decode_context,
@@ -576,6 +656,7 @@ fn send_requests(
       [
         resp,
         ..send_requests(
+          transport,
           socket,
           requests,
           <<>>,
@@ -590,41 +671,49 @@ fn send_requests(
   }
 }
 
-fn receive_frame(socket: Socket, data: BitArray) -> #(Frame, BitArray) {
+fn receive_frame(
+  transport: Transport,
+  socket: Socket,
+  data: BitArray,
+) -> #(Frame, BitArray) {
   case frame.decode(data) {
     Ok(#(received, rest)) -> {
       let assert <<length:size(24), _frame:bits>> = data
       assert length <= http2.default_settings().max_frame_size
       case received {
         frame.Header(data: frame.Continued(block), ..) -> {
-          let #(block, rest) = receive_continuation(socket, rest, block)
+          let #(block, rest) =
+            receive_continuation(transport, socket, rest, block)
           #(frame.Header(..received, data: frame.Complete(block)), rest)
         }
         _frame -> #(received, rest)
       }
     }
     Error(_connection_error) -> {
-      let assert Ok(received) = tcp.receive_timeout(socket, 0, 5000)
-      receive_frame(socket, <<data:bits, received:bits>>)
+      let assert Ok(received) =
+        transport.receive_timeout(transport, socket, 0, 5000)
+      receive_frame(transport, socket, <<data:bits, received:bits>>)
     }
   }
 }
 
 fn receive_continuation(
+  transport: Transport,
   socket: Socket,
   data: BitArray,
   block: BitArray,
 ) -> #(BitArray, BitArray) {
   let assert #(frame.Continuation(data: data, ..), rest) =
-    receive_frame(socket, data)
+    receive_frame(transport, socket, data)
   case data {
     frame.Complete(data) -> #(<<block:bits, data:bits>>, rest)
     frame.Continued(data) ->
-      receive_continuation(socket, rest, <<block:bits, data:bits>>)
+      receive_continuation(transport, socket, rest, <<block:bits, data:bits>>)
   }
 }
 
 fn receive_response(
+  transport: Transport,
   socket: Socket,
   data: BitArray,
   context: http2.HpackContext,
@@ -632,7 +721,7 @@ fn receive_response(
   window: Int,
   resp: Response(BitArray),
 ) -> #(Response(BitArray), http2.HpackContext, BitArray, Int) {
-  let #(received, rest) = receive_frame(socket, data)
+  let #(received, rest) = receive_frame(transport, socket, data)
   let #(resp, context, window, end_stream) = case received {
     frame.Header(data: frame.Complete(data), end_stream: end_stream, ..) -> {
       let assert Ok(#(headers, context)) = http2.hpack_decode(context, data)
@@ -650,7 +739,12 @@ fn receive_response(
     frame.Data(data: data, end_stream: end_stream, identifier: stream) -> #(
       response.set_body(resp, <<resp.body:bits, data:bits>>),
       context,
-      update_window(socket, stream, window - bit_array.byte_size(data)),
+      update_window(
+        transport,
+        socket,
+        stream,
+        window - bit_array.byte_size(data),
+      ),
       end_stream,
     )
     frame.Ping(ack: True, data: data) -> #(
@@ -660,7 +754,8 @@ fn receive_response(
       True,
     )
     frame.GoAway(..) -> {
-      let assert Error(Closed) = tcp.receive_timeout(socket, 0, 5000)
+      let assert Error(Closed) =
+        transport.receive_timeout(transport, socket, 0, 5000)
       #(response.set_body(resp, frame.encode(received)), context, window, True)
     }
     frame.Termination(identifier: reset, ..) if reset == identifier -> #(
@@ -673,11 +768,21 @@ fn receive_response(
   }
   case end_stream {
     True -> #(resp, context, rest, window)
-    False -> receive_response(socket, rest, context, identifier, window, resp)
+    False ->
+      receive_response(
+        transport,
+        socket,
+        rest,
+        context,
+        identifier,
+        window,
+        resp,
+      )
   }
 }
 
 fn update_window(
+  transport: Transport,
   socket: Socket,
   identifier: frame.StreamIdentifier(Frame),
   window: Int,
@@ -697,7 +802,7 @@ fn update_window(
           )):bits,
         >>
         |> bytes_tree.from_bit_array
-        |> tcp.send(socket, _)
+        |> transport.send(transport, socket, _)
       65_535
     }
     _ -> window
@@ -706,6 +811,15 @@ fn update_window(
 
 @external(erlang, "file", "read_file")
 pub fn read_file(path: String) -> Result(BitArray, anything)
+
+@external(erlang, "tls_ffi", "write_certificate")
+fn write_certificate(directory: String) -> #(String, String)
+
+@external(erlang, "tls_ffi", "connect")
+fn tls_connect_port(
+  port: Int,
+  protocols: List(String),
+) -> Result(Socket, SocketReason)
 
 @external(erlang, "gen_tcp", "connect")
 fn gen_tcp_connect(

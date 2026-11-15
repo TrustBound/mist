@@ -2056,3 +2056,48 @@ pub fn it_times_out_slow_request_bodies_test() {
 
   assert result == Error(mist.MalformedBody)
 }
+
+pub fn it_negotiates_http2_over_tls_test() {
+  use <- scaffold.start_tls_server(mist.new(scaffold.uri_echo_handler))
+
+  let socket = scaffold.tls_connect(["h2", "http/1.1"])
+
+  assert scaffold.tls_negotiated_protocol(socket) == Ok("h2")
+}
+
+pub fn it_serves_http2_over_tls_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "https"),
+    #(":authority", "localhost:8888"),
+    #(":path", "/some/path"),
+  ]
+
+  use <- scaffold.start_tls_server(mist.new(scaffold.uri_echo_handler))
+
+  let socket = scaffold.tls_connect(["h2", "http/1.1"])
+  let assert [actual] =
+    scaffold.http2_tls_requests(socket, [#(<<>>, headers, <<>>)])
+
+  let expected =
+    response.new(200)
+    |> response.prepend_header("content-length", "36")
+    |> response.set_body(
+      bytes_tree.from_bit_array(<<"GET https://localhost:8888/some/path":utf8>>),
+    )
+
+  bitstring_response_should_equal(actual, expected)
+}
+
+pub fn it_serves_http1_over_tls_test() {
+  use <- scaffold.start_tls_server(mist.new(scaffold.uri_echo_handler))
+
+  let socket = scaffold.tls_connect(["http/1.1"])
+  let assert Ok("http/1.1") = scaffold.tls_negotiated_protocol(socket)
+  let actual =
+    scaffold.http1_tls_request(socket, <<
+      "GET /some/path HTTP/1.1\r\nhost: localhost:8888\r\n\r\n":utf8,
+    >>)
+
+  let assert <<"HTTP/1.1 200 OK\r\n":utf8, _rest:bits>> = actual
+}
