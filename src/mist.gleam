@@ -403,6 +403,23 @@ fn fetch_chunks_until(
 pub fn stream(
   req: Request(Connection),
 ) -> Result(fn(Int) -> Result(Chunk, ReadError), ReadError) {
+  case req.body.body {
+    http.Stream(selector:, data:, end:, consume_data:, ..) ->
+      Ok(do_stream_http2(
+        selector,
+        data,
+        end,
+        consume_data,
+        req.body.read_timeout,
+      ))
+    http.Initial(data) -> stream_http1(req, data)
+  }
+}
+
+fn stream_http1(
+  req: Request(Connection),
+  data: BitArray,
+) -> Result(fn(Int) -> Result(Chunk, ReadError), ReadError) {
   let continue =
     req
     |> http.handle_continue
@@ -414,8 +431,6 @@ pub fn stream(
     Ok("chunked") -> True
     _ -> False
   }
-
-  let assert http.Initial(data) = req.body.body
 
   case is_chunked {
     True -> {
@@ -435,6 +450,49 @@ pub fn stream(
         Buffer(data: data, remaining: int.max(0, content_length - initial_size))
 
       do_stream(req, buffer)
+    }
+  }
+}
+
+/// Streams an HTTP/2 request body. The body arrives as `Data` frames on the
+/// stream's selector. Each part read grants the client more window.
+fn do_stream_http2(
+  selector: process.Selector(#(BitArray, Bool)),
+  data: BitArray,
+  end: Bool,
+  consume_data: fn(Int) -> Nil,
+  timeout: Int,
+) -> fn(Int) -> Result(Chunk, ReadError) {
+  fn(size) {
+    let byte_size = bit_array.byte_size(data)
+    case byte_size >= size, end, byte_size {
+      True, _end, _byte_size -> {
+        let assert <<chunk:bytes-size(size), rest:bytes>> = data
+        Ok(Chunk(
+          chunk,
+          do_stream_http2(selector, rest, end, consume_data, timeout),
+        ))
+      }
+      False, True, 0 -> Ok(Done)
+      False, True, _byte_size ->
+        Ok(Chunk(
+          data,
+          do_stream_http2(selector, <<>>, True, consume_data, timeout),
+        ))
+      False, False, _byte_size -> {
+        use #(next, end) <- result.try(
+          process.selector_receive(selector, timeout)
+          |> result.replace_error(MalformedBody),
+        )
+        consume_data(bit_array.byte_size(next))
+        do_stream_http2(
+          selector,
+          <<data:bits, next:bits>>,
+          end,
+          consume_data,
+          timeout,
+        )(size)
+      }
     }
   }
 }

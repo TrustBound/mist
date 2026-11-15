@@ -2118,3 +2118,81 @@ pub fn it_does_not_upgrade_requests_to_h2c_test() {
 
   assert status == <<"HTTP/1.1 200 OK\r\n":utf8>>
 }
+
+fn stream_chunks_handler(size: Int) {
+  fn(req) {
+    let assert Ok(consume) = mist.stream(req)
+    let chunks = read_stream_chunks(consume, size, [])
+    response.new(200)
+    |> response.set_body(
+      mist.Bytes(bytes_tree.from_string(string.join(chunks, "|"))),
+    )
+  }
+}
+
+fn read_stream_chunks(
+  consume: fn(Int) -> Result(mist.Chunk, mist.ReadError),
+  size: Int,
+  chunks: List(String),
+) -> List(String) {
+  case consume(size) {
+    Ok(mist.Chunk(data, next)) -> {
+      let assert Ok(text) = bit_array.to_string(data)
+      read_stream_chunks(next, size, [text, ..chunks])
+    }
+    Ok(mist.Done) -> list.reverse(chunks)
+    Error(_reason) -> list.reverse(["error", ..chunks])
+  }
+}
+
+pub fn it_streams_request_bodies_test() {
+  let headers = [
+    #(":method", "POST"),
+    #(":scheme", "http"),
+    #(":authority", "localhost:8888"),
+    #(":path", "/"),
+  ]
+
+  use <- scaffold.open_server(8888, stream_chunks_handler(4))
+
+  let actual = scaffold.http2_request_with_body(headers, <<"abcdefghij":utf8>>)
+
+  assert actual.body == <<"abcd|efgh|ij":utf8>>
+}
+
+pub fn it_streams_request_bodies_across_data_frames_test() {
+  let headers = [
+    #(":method", "GET"),
+    #(":scheme", "http"),
+    #(":authority", "example.com:8080"),
+    #(":path", "/"),
+  ]
+  let read = process.new_subject()
+
+  use <- scaffold.open_server(8888, fn(req) {
+    let assert Ok(consume) = mist.stream(req)
+    process.send(read, read_stream_sizes(consume, 30_000, []))
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  })
+
+  let socket = scaffold.http2_open([], headers)
+  let assert Ok([]) = process.receive(read, 1000)
+  scaffold.http2_send(socket, post_headers(3))
+  scaffold.http2_send_body(socket, 3, <<0:size(320_000)>>)
+
+  assert process.receive(read, 1000) == Ok([30_000, 10_000])
+}
+
+fn read_stream_sizes(
+  consume: fn(Int) -> Result(mist.Chunk, mist.ReadError),
+  size: Int,
+  sizes: List(Int),
+) -> List(Int) {
+  case consume(size) {
+    Ok(mist.Chunk(data, next)) ->
+      read_stream_sizes(next, size, [bit_array.byte_size(data), ..sizes])
+    Ok(mist.Done) -> list.reverse(sizes)
+    Error(_reason) -> list.reverse([-1, ..sizes])
+  }
+}
