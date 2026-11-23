@@ -2,22 +2,31 @@
 
 # dream_http_server 1.3.0
 
-One more change to mist:
+Two more changes to mist:
 
 - Keep an HTTP/1.1 connection open after a `chunked` response. The last
   chunk marks the end of the body, so the connection now reads the next
   request, as it does after any other response. Before this, the server
   closed the connection after the last chunk and sent no `connection: close`
-  header, so a client that sent its next request on that connection lost it.
-  The connection now keeps the socket and waits until the process that
-  sends the chunks stops. When that process stops with an error, the
-  response has no last chunk, and the server closes the connection. A
-  response with a `connection: close` header closes the connection after
-  the last chunk. HTTP/2 and `server_sent_events` are unchanged
+  header, so a client that sent its next request on that connection lost it
+- Send `server_sent_events` on HTTP/1.1 with `transfer-encoding: chunked`,
+  one chunk for each event, and keep the connection open after the last
+  chunk. Before this, the events had no length and no chunks, so only the
+  close of the connection marked their end, and a client could not tell a
+  stream that ended from a connection that broke. The response said
+  `connection: keep-alive` and the server closed the connection
 
-Tests: 103 run, 0 failed. Mac: Apple M1 Max, 10 cores, 64 GB, macOS 26.5.1,
-OTP 29, Gleam 1.19.2, about 8.5 seconds with the build check, 3 of 3 runs
-passed. Linux: not run yet.
+For both, the connection keeps the socket and waits until the process that
+sends the body stops. A watcher process starts before that process can
+stop, and tells the connection how it stopped. When it stops with an error,
+the response has no last chunk, and the server closes the connection. A
+`chunked` response with a `connection: close` header closes the connection
+after the last chunk. HTTP/2 is unchanged
+
+Tests: 104 run, 0 failed. Mac: Apple M1 Max, 10 cores, 64 GB, macOS 26.5.1,
+OTP 29, Gleam 1.19.2, about 12 seconds with the build check, 5 of 5 runs
+passed. Linux: the mist CI steps in Ubuntu 24.04 (aarch64, Docker), OTP
+28.0, Gleam 1.14.0, format check passed, 6 of 6 runs passed.
 
 # dream_http_server 1.2.0
 
