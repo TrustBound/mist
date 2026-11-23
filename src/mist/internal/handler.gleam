@@ -67,6 +67,7 @@ pub fn with_func(
         transport: conn.transport,
         factory_name:,
         read_timeout:,
+        chunk_process: process.new_subject(),
       )
 
     let result = case msg, state {

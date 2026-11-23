@@ -509,6 +509,33 @@ pub fn http1_receive_until_closed(
   }
 }
 
+// True when the server closes the connection. Waits `timeout` milliseconds
+// for each read
+pub fn http1_closes(socket: Socket, timeout: Int) -> Bool {
+  case tcp.receive_timeout(socket, 0, timeout) {
+    Ok(_data) -> http1_closes(socket, timeout)
+    Error(reason) -> reason == Closed
+  }
+}
+
+// Reads one chunked response to its last chunk, and then what arrives in
+// the next 100 milliseconds
+pub fn http1_receive_chunked(socket: Socket, received: BitArray) -> BitArray {
+  let assert Ok(text) = bit_array.to_string(received)
+  case string.ends_with(text, "0\r\n\r\n") {
+    True ->
+      case tcp.receive_timeout(socket, 0, 100) {
+        Ok(data) -> <<received:bits, data:bits>>
+        Error(_nothing) -> received
+      }
+    False ->
+      case tcp.receive_timeout(socket, 0, 5000) {
+        Ok(data) -> http1_receive_chunked(socket, <<received:bits, data:bits>>)
+        Error(_closed) -> received
+      }
+  }
+}
+
 pub fn http1_send(socket: Socket, data: BitArray) -> Result(Nil, SocketReason) {
   data
   |> bytes_tree.from_bit_array

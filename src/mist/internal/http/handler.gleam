@@ -44,10 +44,11 @@ pub fn call(
   |> result.try(fn(resp) {
     case resp {
       response.Response(body: Websocket, ..)
-      | response.Response(body: ServerSentEvents, ..)
-      | response.Response(body: Chunked, ..) -> {
+      | response.Response(body: ServerSentEvents, ..) -> {
         Error(Ok(Nil))
       }
+      response.Response(body: Chunked, ..) as resp ->
+        await_chunked_response(resp, req.body, sender)
       response.Response(body: body, ..) as resp -> {
         case body {
           Bytes(body) ->
@@ -60,6 +61,36 @@ pub fn call(
       }
     }
   })
+}
+
+// The chunks of a chunked response mark the end of its body, so the
+// connection can take the next request after the last chunk
+fn await_chunked_response(
+  resp: response.Response(ResponseData),
+  conn: Connection,
+  sender: Subject(handler.Message(user_message)),
+) -> Result(State, Result(Nil, String)) {
+  case process.receive(conn.chunk_process, 0) {
+    Ok(monitor) -> {
+      let down =
+        process.new_selector()
+        |> process.select_specific_monitor(monitor, fn(down) { down })
+        |> process.selector_receive_forever
+      case down {
+        process.ProcessDown(reason: process.Normal, ..) ->
+          resp
+          |> response.set_body(bytes_tree.new())
+          |> close_or_set_timer(conn, sender)
+        _ -> {
+          // The response has no last chunk, so the client must not read
+          // another response from this connection
+          let _ = transport.close(conn.transport, conn.socket)
+          Error(Ok(Nil))
+        }
+      }
+    }
+    Error(Nil) -> Error(Ok(Nil))
+  }
 }
 
 fn log_and_error(

@@ -1191,15 +1191,12 @@ fn http1_chunked(
 
   case factory.start_child(factory_supervisor, start) {
     Ok(started) -> {
-      // The process can finish its chunks and stop before it gets the socket.
-      // The hand-over then fails, and the connection closes the socket itself.
-      let _handed_over =
-        transport.controlling_process(
-          req.body.transport,
-          req.body.socket,
-          started.data,
-        )
-      response.new(200) |> response.set_body(Chunked)
+      // The connection keeps the socket. It waits until this process stops,
+      // then it reads the next request
+      process.send(req.body.chunk_process, process.monitor(started.data))
+      // The connection reads the headers of this response after the last
+      // chunk, to see if it must close
+      response |> response.set_body(Chunked)
     }
     Error(_start_error) -> {
       logging.log(logging.Error, "Failed to start chunked response process")

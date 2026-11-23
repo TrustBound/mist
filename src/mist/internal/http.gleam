@@ -45,6 +45,9 @@ pub type Connection {
       ),
     ),
     read_timeout: Int,
+    // `chunked` sends the monitor of the process that sends the chunks here,
+    // so the connection can wait for the end of the chunked response
+    chunk_process: process.Subject(process.Monitor),
   )
 }
 

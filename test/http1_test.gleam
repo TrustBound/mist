@@ -333,7 +333,7 @@ pub fn it_ends_chunked_responses_without_an_error_response_test() {
     list.repeat(Nil, 30)
     |> list.map(fn(_nil) {
       scaffold.http1_open(<<"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n":utf8>>)
-      |> scaffold.http1_receive_until_closed(<<>>)
+      |> scaffold.http1_receive_chunked(<<>>)
     })
   let error_responses =
     list.filter(responses, fn(received) {
@@ -344,6 +344,76 @@ pub fn it_ends_chunked_responses_without_an_error_response_test() {
     })
 
   assert error_responses == []
+}
+
+pub fn it_keeps_the_connection_open_after_a_chunked_response_test() {
+  use <- scaffold.start_server(
+    mist.new(stop_after_one_chunk_handler)
+    |> mist.port(8888),
+  )
+  let request = <<"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n":utf8>>
+  let socket = scaffold.http1_open(request)
+  let first = scaffold.http1_receive_chunked(socket, <<>>)
+
+  let assert Ok(_sent) = scaffold.http1_send(socket, request)
+  let second = scaffold.http1_receive_chunked(socket, <<>>)
+
+  assert second == first
+  assert second
+    |> bit_array.to_string
+    |> result.unwrap("")
+    |> string.ends_with("4\r\nonly\r\n0\r\n\r\n")
+}
+
+fn close_after_one_chunk_handler(
+  req: request.Request(mist.Connection),
+) -> response.Response(mist.ResponseData) {
+  mist.chunked(
+    req,
+    response.new(200) |> response.set_header("connection", "close"),
+    init: fn(subj) { process.send(subj, <<"only":utf8>>) },
+    loop: fn(_state, message, conn) {
+      let assert Ok(_nil) = mist.send_chunk(conn, message)
+      mist.chunk_stop()
+    },
+  )
+}
+
+pub fn it_closes_the_connection_after_a_chunked_response_that_asks_for_it_test() {
+  use <- scaffold.start_server(
+    mist.new(close_after_one_chunk_handler)
+    |> mist.port(8888),
+  )
+  let socket =
+    scaffold.http1_open(<<"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n":utf8>>)
+
+  // The server waits up to 5 seconds for the client to close first
+  assert scaffold.http1_closes(socket, 6000)
+}
+
+fn abort_after_one_chunk_handler(
+  req: request.Request(mist.Connection),
+) -> response.Response(mist.ResponseData) {
+  mist.chunked(
+    req,
+    response.new(200),
+    init: fn(subj) { process.send(subj, <<"only":utf8>>) },
+    loop: fn(_state, message, conn) {
+      let assert Ok(_nil) = mist.send_chunk(conn, message)
+      mist.chunk_stop_abnormal("stopped early")
+    },
+  )
+}
+
+pub fn it_closes_the_connection_when_a_chunked_response_aborts_test() {
+  use <- scaffold.start_server(
+    mist.new(abort_after_one_chunk_handler)
+    |> mist.port(8888),
+  )
+  let socket =
+    scaffold.http1_open(<<"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n":utf8>>)
+
+  assert scaffold.http1_closes(socket, 1000)
 }
 
 fn selector_event_handler(
