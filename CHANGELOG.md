@@ -1,5 +1,24 @@
 # Changelog
 
+# dream_http_server 1.3.1
+
+One more change to mist:
+
+- Close an HTTP/1.1 connection after the response when the request has a
+  `connection: close` header, and send `connection: close` in that
+  response. RFC 9112 section 9.6 says a server must do this. Before this,
+  the server answered `connection: keep-alive` and held the connection open
+  until its 10 second idle timer ended. The change applies to a response
+  with a body, a `chunked` response and `server_sent_events`. The header
+  value is read in any letter case and in a list (`TE, close`). A request
+  without the header behaves as before
+
+Tests: 108 run, 0 failed. Each of the 4 new tests fails without the change.
+Mac: Apple M1 Max, 10 cores, 64 GB, macOS 26.5.1, OTP 29, Gleam 1.19.2,
+about 12 seconds with the build check, 5 of 5 runs passed. Linux: the mist
+CI steps in Ubuntu 24.04 (aarch64, Docker), OTP 28.0, Gleam 1.14.0, format
+check passed, 6 of 6 runs passed.
+
 # dream_http_server 1.3.0
 
 Two more changes to mist:
