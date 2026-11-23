@@ -1,5 +1,24 @@
 # Changelog
 
+# dream_http_server 1.3.0
+
+One more change to mist:
+
+- Keep an HTTP/1.1 connection open after a `chunked` response. The last
+  chunk marks the end of the body, so the connection now reads the next
+  request, as it does after any other response. Before this, the server
+  closed the connection after the last chunk and sent no `connection: close`
+  header, so a client that sent its next request on that connection lost it.
+  The connection now keeps the socket and waits until the process that
+  sends the chunks stops. When that process stops with an error, the
+  response has no last chunk, and the server closes the connection. A
+  response with a `connection: close` header closes the connection after
+  the last chunk. HTTP/2 and `server_sent_events` are unchanged
+
+Tests: 103 run, 0 failed. Mac: Apple M1 Max, 10 cores, 64 GB, macOS 26.5.1,
+OTP 29, Gleam 1.19.2, about 8.5 seconds with the build check, 3 of 3 runs
+passed. Linux: not run yet.
+
 # dream_http_server 1.2.0
 
 One more change to mist:
