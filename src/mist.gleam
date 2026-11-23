@@ -983,17 +983,24 @@ fn http1_server_sent_events(
     |> response.set_header("content-type", "text/event-stream")
     |> response.set_header("cache-control", "no-cache")
     |> response.set_header("connection", "keep-alive")
+  // Each event is one chunk, so the last chunk marks the end of the events
+  // and the connection can take the next request
+  let headers = [
+    #("transfer-encoding", "chunked"),
+    ..with_default_headers.headers
+  ]
 
   case
     transport.send(
       req.body.transport,
       req.body.socket,
-      encoder.response_builder(200, with_default_headers.headers, "1.1"),
+      encoder.response_builder(200, headers, "1.1"),
     )
   {
     Ok(_nil) -> {
       let start = fn() {
         actor.new_with_initialiser(1000, fn(subj) {
+          http.watch_chunk_process(req.body)
           let #(state, selector) = init(subj)
           state
           |> actor.initialised
@@ -1012,18 +1019,11 @@ fn http1_server_sent_events(
       }
       let factory_supervisor = factory.get_by_name(req.body.factory_name)
       case factory.start_child(factory_supervisor, start) {
-        Ok(started) -> {
-          // The process can finish its events and stop before it gets the
-          // socket. The hand-over then fails, and the connection closes the
-          // socket itself.
-          let _handed_over =
-            transport.controlling_process(
-              req.body.transport,
-              req.body.socket,
-              started.data,
-            )
-
-          response.new(200) |> response.set_body(ServerSentEvents)
+        Ok(_started) -> {
+          // The connection keeps the socket. It waits until this process
+          // stops, then it sends the last chunk and reads the next request
+          process.send(req.body.chunk_process, http.ChunkProcessStarted)
+          with_default_headers |> response.set_body(ServerSentEvents)
         }
         Error(_start_error) -> {
           logging.log(logging.Error, "Failed to start SSE process")
@@ -1115,10 +1115,7 @@ pub fn send_event(conn: SSEConnection, event: SSEEvent) -> Result(Nil, Nil) {
     |> bytes_tree.from_string_tree
 
   case conn.body {
-    http.Initial(_data) ->
-      transport.send(conn.transport, conn.socket, message)
-      |> result.replace(Nil)
-      |> result.replace_error(Nil)
+    http.Initial(_data) -> send_chunk(conn, bytes_tree.to_bit_array(message))
     http.Stream(send_data: send_data, ..) ->
       send_data(bytes_tree.to_bit_array(message))
   }
@@ -1151,6 +1148,7 @@ fn http1_chunked(
 ) -> Response(ResponseData) {
   let start = fn() {
     actor.new_with_initialiser(1000, fn(subj) {
+      http.watch_chunk_process(req.body)
       init(subj)
       |> actor.initialised
       |> actor.returning(process.self())
@@ -1190,10 +1188,10 @@ fn http1_chunked(
   let factory_supervisor = factory.get_by_name(req.body.factory_name)
 
   case factory.start_child(factory_supervisor, start) {
-    Ok(started) -> {
+    Ok(_started) -> {
       // The connection keeps the socket. It waits until this process stops,
       // then it reads the next request
-      process.send(req.body.chunk_process, process.monitor(started.data))
+      process.send(req.body.chunk_process, http.ChunkProcessStarted)
       // The connection reads the headers of this response after the last
       // chunk, to see if it must close
       response |> response.set_body(Chunked)

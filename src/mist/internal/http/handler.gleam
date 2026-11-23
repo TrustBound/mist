@@ -15,8 +15,8 @@ import logging
 import mist/internal/encoder
 import mist/internal/file
 import mist/internal/http.{
-  type Connection, type Handler, type ResponseData, Bytes, Chunked, File,
-  ServerSentEvents, Websocket,
+  type Connection, type Handler, type ResponseData, Bytes, ChunkProcessStarted,
+  ChunkProcessStopped, Chunked, File, ServerSentEvents, Websocket,
 }
 
 pub type State {
@@ -43,12 +43,18 @@ pub fn call(
   ))
   |> result.try(fn(resp) {
     case resp {
-      response.Response(body: Websocket, ..)
-      | response.Response(body: ServerSentEvents, ..) -> {
+      response.Response(body: Websocket, ..) -> {
         Error(Ok(Nil))
       }
+      response.Response(body: ServerSentEvents, ..) as resp ->
+        await_chunked_response(
+          resp,
+          req.body,
+          sender,
+          bytes_tree.from_bit_array(last_chunk_bytes),
+        )
       response.Response(body: Chunked, ..) as resp ->
-        await_chunked_response(resp, req.body, sender)
+        await_chunked_response(resp, req.body, sender, bytes_tree.new())
       response.Response(body: body, ..) as resp -> {
         case body {
           Bytes(body) ->
@@ -63,31 +69,37 @@ pub fn call(
   })
 }
 
+const last_chunk_bytes = <<"0\r\n\r\n":utf8>>
+
 // The chunks of a chunked response mark the end of its body, so the
-// connection can take the next request after the last chunk
+// connection can take the next request after the last chunk. The process of
+// a `chunked` response sends its last chunk itself. The process of
+// `server_sent_events` stops without one, so the connection sends it
 fn await_chunked_response(
   resp: response.Response(ResponseData),
   conn: Connection,
   sender: Subject(handler.Message(user_message)),
+  last_chunk: BytesTree,
 ) -> Result(State, Result(Nil, String)) {
-  case process.receive(conn.chunk_process, 0) {
-    Ok(monitor) -> {
-      let down =
-        process.new_selector()
-        |> process.select_specific_monitor(monitor, fn(down) { down })
-        |> process.selector_receive_forever
-      case down {
-        process.ProcessDown(reason: process.Normal, ..) ->
-          resp
-          |> response.set_body(bytes_tree.new())
-          |> close_or_set_timer(conn, sender)
-        _ -> {
-          // The response has no last chunk, so the client must not read
-          // another response from this connection
-          let _ = transport.close(conn.transport, conn.socket)
-          Error(Ok(Nil))
-        }
-      }
+  // The process can stop before `chunked` returns. Its `ChunkProcessStopped`
+  // is then here first, and the `ChunkProcessStarted` of `chunked` after it
+  let stopped = case process.receive(conn.chunk_process, 0) {
+    Ok(ChunkProcessStarted) -> Ok(process.receive_forever(conn.chunk_process))
+    Ok(ChunkProcessStopped(_reason) as stopped) -> Ok(stopped)
+    Error(Nil) -> Error(Nil)
+  }
+  case stopped {
+    Ok(ChunkProcessStopped(process.Normal)) -> {
+      let _ = transport.send(conn.transport, conn.socket, last_chunk)
+      resp
+      |> response.set_body(bytes_tree.new())
+      |> close_or_set_timer(conn, sender)
+    }
+    Ok(_stopped_with_an_error) -> {
+      // The response has no last chunk, so the client must not read
+      // another response from this connection
+      let _ = transport.close(conn.transport, conn.socket)
+      Error(Ok(Nil))
     }
     Error(Nil) -> Error(Ok(Nil))
   }

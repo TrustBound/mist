@@ -45,10 +45,35 @@ pub type Connection {
       ),
     ),
     read_timeout: Int,
-    // `chunked` sends the monitor of the process that sends the chunks here,
-    // so the connection can wait for the end of the chunked response
-    chunk_process: process.Subject(process.Monitor),
+    // `chunked` and `server_sent_events` say here that a process sends the
+    // body, and how that process stopped, so the connection can wait for the
+    // end of the response
+    chunk_process: process.Subject(ChunkProcess),
   )
+}
+
+pub type ChunkProcess {
+  ChunkProcessStarted
+  ChunkProcessStopped(process.ExitReason)
+}
+
+/// Run this in the process that sends the body, before it handles its first
+/// message. Another process then watches it, and tells the connection how
+/// it stopped. The watcher is there before this process can stop, so it
+/// also sees a process that stops at once
+pub fn watch_chunk_process(conn: Connection) -> Nil {
+  let chunk_process = process.self()
+  let watching = process.new_subject()
+  process.spawn_unlinked(fn() {
+    let monitor = process.monitor(chunk_process)
+    process.send(watching, Nil)
+    let down =
+      process.new_selector()
+      |> process.select_specific_monitor(monitor, fn(down) { down })
+      |> process.selector_receive_forever
+    process.send(conn.chunk_process, ChunkProcessStopped(down.reason))
+  })
+  process.receive_forever(watching)
 }
 
 pub type Handler =

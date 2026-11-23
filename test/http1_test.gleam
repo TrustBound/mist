@@ -295,7 +295,7 @@ pub fn it_ends_server_sent_events_without_an_error_response_test() {
     list.repeat(Nil, 30)
     |> list.map(fn(_nil) {
       scaffold.http1_open(<<"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n":utf8>>)
-      |> scaffold.http1_receive_until_closed(<<>>)
+      |> scaffold.http1_receive_chunked(<<>>)
     })
 
   let error_responses =
@@ -307,6 +307,25 @@ pub fn it_ends_server_sent_events_without_an_error_response_test() {
     })
 
   assert error_responses == []
+}
+
+pub fn it_keeps_the_connection_open_after_server_sent_events_test() {
+  use <- scaffold.start_server(
+    mist.new(stop_after_one_event_handler)
+    |> mist.port(8888),
+  )
+  let request = <<"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n":utf8>>
+  let socket = scaffold.http1_open(request)
+  let first = scaffold.http1_receive_chunked(socket, <<>>)
+
+  let assert Ok(_sent) = scaffold.http1_send(socket, request)
+  let second = scaffold.http1_receive_chunked(socket, <<>>)
+
+  assert second == first
+  assert second
+    |> bit_array.to_string
+    |> result.unwrap("")
+    |> string.ends_with("\r\n\r\nC\r\ndata: only\n\n\r\n0\r\n\r\n")
 }
 
 fn stop_after_one_chunk_handler(
@@ -451,7 +470,7 @@ pub fn it_sends_server_sent_events_from_the_init_selector_test() {
   let assert Ok(other) = process.receive(others, 1000)
   process.send(other, "from the selector")
   let received =
-    scaffold.http1_receive_until_closed(socket, <<>>)
+    scaffold.http1_receive_chunked(socket, <<>>)
     |> bit_array.to_string
     |> result.unwrap("")
 
