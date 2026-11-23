@@ -983,6 +983,7 @@ fn http1_server_sent_events(
     |> response.set_header("content-type", "text/event-stream")
     |> response.set_header("cache-control", "no-cache")
     |> response.set_header("connection", "keep-alive")
+    |> http.close_if_requested(req, _)
   // Each event is one chunk, so the last chunk marks the end of the events
   // and the connection can take the next request
   let headers = [
@@ -1174,6 +1175,7 @@ fn http1_chunked(
     |> result.map(fn(started) { actor.Started(started.data, started.data) })
   }
 
+  let response = http.close_if_requested(req, response)
   let headers = [#("transfer-encoding", "chunked"), ..response.headers]
   let initial_payload =
     encoder.response_builder(

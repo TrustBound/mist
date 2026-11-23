@@ -476,3 +476,63 @@ pub fn it_sends_server_sent_events_from_the_init_selector_test() {
 
   assert string.contains(received, "data: from the selector\n\n")
 }
+
+fn short_handler(
+  _req: request.Request(mist.Connection),
+) -> response.Response(mist.ResponseData) {
+  response.new(200)
+  |> response.set_body(mist.Bytes(bytes_tree.from_string("ok")))
+}
+
+const close_request = <<
+  "GET / HTTP/1.1\r\nhost: localhost\r\nconnection: close\r\n\r\n":utf8,
+>>
+
+fn says_close_then_closes(socket) -> Bool {
+  let says_close =
+    scaffold.http1_receive(socket)
+    |> bit_array.to_string
+    |> result.unwrap("")
+    |> string.contains("\r\nconnection: close\r\n")
+
+  says_close && scaffold.http1_closes(socket, 2000)
+}
+
+pub fn it_closes_the_connection_when_the_request_asks_for_it_test() {
+  use <- scaffold.start_server(
+    mist.new(short_handler)
+    |> mist.port(8888),
+  )
+
+  assert says_close_then_closes(scaffold.http1_open(close_request))
+}
+
+pub fn it_reads_the_close_option_in_any_case_and_in_a_list_test() {
+  use <- scaffold.start_server(
+    mist.new(short_handler)
+    |> mist.port(8888),
+  )
+  let request = <<
+    "GET / HTTP/1.1\r\nhost: localhost\r\nConnection: TE, Close\r\n\r\n":utf8,
+  >>
+
+  assert says_close_then_closes(scaffold.http1_open(request))
+}
+
+pub fn it_closes_after_a_chunked_response_when_the_request_asks_for_it_test() {
+  use <- scaffold.start_server(
+    mist.new(stop_after_one_chunk_handler)
+    |> mist.port(8888),
+  )
+
+  assert says_close_then_closes(scaffold.http1_open(close_request))
+}
+
+pub fn it_closes_after_server_sent_events_when_the_request_asks_for_it_test() {
+  use <- scaffold.start_server(
+    mist.new(stop_after_one_event_handler)
+    |> mist.port(8888),
+  )
+
+  assert says_close_then_closes(scaffold.http1_open(close_request))
+}

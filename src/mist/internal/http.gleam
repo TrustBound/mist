@@ -618,6 +618,25 @@ pub fn connection_close(resp: Response(any)) -> Response(any) {
   response.set_header(resp, "connection", "close")
 }
 
+// A client that sends `connection: close` wants no more responses on this
+// connection, so the server must close it after this response
+pub fn close_if_requested(
+  req: Request(any),
+  resp: Response(body),
+) -> Response(body) {
+  let requested =
+    request.get_header(req, "connection")
+    |> result.map(string.lowercase)
+    |> result.map(string.split(_, ","))
+    |> result.unwrap([])
+    |> list.map(string.trim)
+    |> list.contains("close")
+  case requested {
+    True -> connection_close(resp)
+    False -> resp
+  }
+}
+
 pub fn keep_alive(resp: Response(any)) -> Response(any) {
   response.set_header(resp, "connection", "keep-alive")
 }

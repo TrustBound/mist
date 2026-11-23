@@ -42,7 +42,7 @@ pub fn call(
     version,
   ))
   |> result.try(fn(resp) {
-    case resp {
+    case http.close_if_requested(req, resp) {
       response.Response(body: Websocket, ..) -> {
         Error(Ok(Nil))
       }
