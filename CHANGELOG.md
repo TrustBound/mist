@@ -1,5 +1,60 @@
 # Changelog
 
+# dream_http_server 2.0.0
+
+Five more changes to mist. The first changes the public API:
+
+- Remove `Closed` and `Shutdown` from `WebsocketMessage`. The server never
+  sent `Shutdown`, and it stopped sending `Closed` in mist 0.15.0. A close
+  frame and a dropped connection call `on_close`. Before this, each handler
+  had to match two messages that never arrived. To update, delete the
+  `Closed` and `Shutdown` branches from the handler and do that work in
+  `on_close`
+- Stop a chunked HTTP/1.1 request body at the limit of `read_body`. Before
+  this, the server read the full body into memory and returned it, whatever
+  its size. Now `read_body` returns `ExcessBody` when a chunk size makes the
+  body larger than the limit. The server does not read that chunk
+- Give `MalformedBody` at once to a `stream` reader when a chunk size line
+  is not hexadecimal. Before this, the server waited for more data until the
+  read timeout ended, 15 seconds by default
+- Close the HTTP/1.1 connection after the response when the handler did not
+  read the request body to its end. The server sends `connection: close` in
+  that response, whatever header the handler set. Before this, the server
+  kept the connection and read the rest of the body as the next request. A
+  body that holds a request was then answered as a request (request
+  smuggling). This applies when the handler does not read the body, when
+  `read_body` returns `ExcessBody` or `MalformedBody`, when a `stream`
+  reader stops before `Done`, and when a chunked body has trailers. A
+  handler no longer has to send `connection: close` after it refuses a
+  body. A request without a body, and a body read to its end, keep the
+  connection as before. RFC 9112 section 9.3 says a server must do this
+- Refuse a chunked body with `MalformedBody` when a chunk size line is longer
+  than 1024 bytes, or when the bytes after a chunk are not a line end.
+  Before this, the server kept the data and read more until the read
+  timeout ended, so a client could make it hold any amount of memory
+
+Package change:
+
+- Require `dream_socket_server` 1.0.1. It starts the process that takes over
+  a new connection before the server accepts connections, so a connection
+  that arrives while the server starts or stops is not closed with no answer
+
+Tests: 124 run, 0 failed. The 2 WebSocket tests check that a close frame
+from the client and a dropped connection each call `on_close` and send no
+message to the handler. They also pass without the change: the compiler
+checks the removal. 5 new tests are for the chunked body. 4 of them fail
+without the change: a body 1 byte over the limit, a chunk size over the
+limit with the rest of the body not sent, a connection after that error,
+and an invalid chunk size in a streamed body. The test of a body at the
+limit passes with and without the change. 9 new tests are for the
+connection after a body that was not read to its end, and for long size
+lines. 8 of them fail without the change: the 4 paths that leave a body
+unread, trailers, and 3 tests of long size lines and a missing line end.
+The test of keep-alive after GET requests and after bodies read in full
+passes with and without the change. Mac: Apple M1 Max, 10 cores, 64
+GB, macOS 26.5.1, OTP 29, Gleam 1.19.2, about 13 seconds with the build
+check, 3 of 3 runs passed. Linux: not run yet.
+
 # dream_http_server 1.3.1
 
 One more change to mist:

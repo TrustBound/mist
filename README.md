@@ -92,6 +92,11 @@ To see every changed line, compare the branch with the upstream release:
 - Forward HTTP/2 request bodies to `chunked` and `server_sent_events` responses
 - Let `chunked` and `server_sent_events` processes stop before they take the socket
 - Add `server_sent_events_with_selector`
+- Remove the `Closed` and `Shutdown` WebSocket messages, which the server never sent
+- Stop a chunked HTTP/1.1 request body at the `read_body` limit
+- Give an error at once for an invalid chunk size in a streamed request body
+- Close the HTTP/1.1 connection when the request body was not read to its end
+- Refuse a chunk size line longer than 1024 bytes, and a chunk without its line end
 
 ## Licence and credit
 
@@ -246,7 +251,6 @@ fn handle_ws_message(state, message, conn) {
       let assert Ok(_) = mist.send_text_frame(conn, text)
       mist.continue(state)
     }
-    mist.Closed | mist.Shutdown -> mist.stop()
   }
 }
 
