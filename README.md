@@ -22,6 +22,15 @@ We publish this fork for four reasons.
 - **It is temporary.** When a mist release contains the fixes, Dream goes back to `mist`, and this package gets a final release that says so.
 - **Report problems with this package to [TrustBound/mist](https://github.com/TrustBound/mist/issues), not to the mist maintainers.** They did not publish it and do not support it.
 
+## Install
+
+```sh
+gleam add dream_http_server
+```
+
+The module is still `mist`, so the code is the same as with mist: `import mist`.
+In the mist README below, `gleam add mist` becomes `gleam add dream_http_server`.
+
 ## What is different from mist 6.0.3
 
 The package differs from mist 6.0.3 in four ways. Nothing else is changed:
@@ -35,7 +44,7 @@ no source file is renamed, reformatted or restyled.
 3. **The changes to the code, listed below.** Each one is its own commit
    with a test.
 4. **Three files for the package itself.** This notice at the top of the
-   README, the `dream_http_server 1.0.0` entry in `CHANGELOG.md`, and
+   README, the `dream_http_server` entries in `CHANGELOG.md`, and
    `test/dream_http_server_test.gleam`, which lets `gleam test` run the
    existing tests under the new package name.
 
