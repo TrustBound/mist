@@ -1,7 +1,8 @@
 import exception
 import gleam/bit_array
 import gleam/bytes_tree.{type BytesTree}
-import gleam/erlang/process.{type Selector, type Subject}
+import gleam/erlang/atom.{type Atom}
+import gleam/erlang/process.{type Pid, type Selector, type Subject}
 import gleam/http.{type Scheme, Http, Https} as gleam_http
 import gleam/http/request.{type Request}
 import gleam/http/response.{type Response}
@@ -522,6 +523,7 @@ pub opaque type Builder(request_body, response_body) {
     read_timeout: Int,
     send_timeout: Int,
     initial_window_size: Int,
+    shutdown_timeout: Int,
   )
 }
 
@@ -551,6 +553,7 @@ pub fn new(handler: fn(Request(in)) -> Response(out)) -> Builder(in, out) {
     read_timeout: 15_000,
     send_timeout: 30_000,
     initial_window_size: 1_048_576,
+    shutdown_timeout: 30_000,
   )
 }
 
@@ -655,6 +658,19 @@ pub fn with_initial_window_size(
   }
 }
 
+/// Set how long, in milliseconds, a stopping server waits for running requests
+/// to finish. The server stops when its supervisor stops it, for example when
+/// the application stops on `SIGTERM`. It then closes the listening socket and
+/// idle connections at once. It closes each connection after the response to
+/// its running request, and sends HTTP/2 `GoAway`. When the time ends, it
+/// closes the connections that remain. The default is 30 seconds.
+pub fn with_shutdown_timeout(
+  builder: Builder(in, out),
+  timeout: Int,
+) -> Builder(in, out) {
+  Builder(..builder, shutdown_timeout: timeout)
+}
+
 fn convert_body_types(
   resp: Response(ResponseData),
 ) -> Response(InternalResponseData) {
@@ -679,6 +695,8 @@ pub fn start(
 ) -> Result(actor.Started(Supervisor), actor.StartError) {
   let listener_name = process.new_name("glisten_listener")
   let factory_name = process.new_name("mist_factory_supervisor")
+  let glisten_name = process.new_name("glisten_supervisor")
+  let connections_name = process.new_name("glisten_connection_supervisor")
 
   supervisor.new(strategy: supervisor.OneForOne)
   |> supervisor.add(
@@ -708,8 +726,10 @@ pub fn start(
         }
       }
       |> glisten.with_listener_name(listener_name)
+      |> glisten.with_connection_factory_name(connections_name)
       |> glisten.start(builder.port)
       |> result.map(fn(server) {
+        let _ = process.register(server.pid, glisten_name)
         let info = glisten.get_server_info(listener_name, 5000)
         let ip_address = to_mist_ip_address(info.ip_address)
         let scheme = case option.is_some(builder.tls_options) {
@@ -729,8 +749,154 @@ pub fn start(
       |> factory.start()
     }),
   )
+  |> supervisor.add(
+    supervision.worker(fn() {
+      start_drain(glisten_name, connections_name, builder.shutdown_timeout)
+    })
+    |> supervision.timeout(builder.shutdown_timeout + 1000),
+  )
   |> supervisor.start()
 }
+
+/// Drain a server that `start` started, and wait at most `timeout`
+/// milliseconds. The server closes the listening socket and idle connections
+/// at once, and closes each connection after the response to its running
+/// request. This returns when the connections are closed or the time ends.
+/// The supervisor keeps running: stop it after this. That stop closes the
+/// connections that remain at once, and does not drain again.
+pub fn drain(server: Pid, within timeout: Int) -> Nil {
+  case drain_process(server) {
+    Ok(pid) -> {
+      let reply = process.new_subject()
+      let monitor = process.monitor(pid)
+      process.send(drain_subject(pid), DrainWithin(timeout, reply))
+      let _ =
+        process.new_selector()
+        |> process.select(reply)
+        |> process.select_specific_monitor(monitor, fn(_down) { Nil })
+        |> process.selector_receive(timeout + 5000)
+      process.demonitor_process(monitor)
+    }
+    Error(Nil) -> Nil
+  }
+}
+
+type DrainMessage {
+  Exited(process.ExitMessage)
+  DrainWithin(timeout: Int, reply: Subject(Nil))
+}
+
+fn drain_subject(pid: Pid) -> Subject(DrainMessage) {
+  process.unsafely_create_subject(
+    pid,
+    atom.to_dynamic(atom.create("mist_drain_within")),
+  )
+}
+
+// The supervisor stops its children in reverse order, so this process stops
+// first. It traps the exit from the supervisor and drains the server before
+// it stops, unless `drain` drained it before. After that, the supervisor
+// stops the connections that remain. A killed supervisor stops at once
+fn start_drain(
+  glisten_name: process.Name(a),
+  connections_name: process.Name(b),
+  timeout: Int,
+) -> Result(actor.Started(Nil), actor.StartError) {
+  actor.new_with_initialiser(1000, fn(_subject) {
+    process.trap_exits(True)
+    actor.initialised(False)
+    |> actor.selecting(
+      process.new_selector()
+      |> process.select(drain_subject(process.self()))
+      |> process.select_trapped_exits(Exited),
+    )
+    |> Ok
+  })
+  |> actor.on_message(fn(drained, message) {
+    case message {
+      DrainWithin(timeout, reply) -> {
+        case drained {
+          True -> Nil
+          False -> drain_connections(glisten_name, connections_name, timeout)
+        }
+        process.send(reply, Nil)
+        actor.continue(True)
+      }
+      Exited(process.ExitMessage(reason: process.Killed, ..)) ->
+        exit(atom.create("shutdown"))
+      Exited(_exit) -> {
+        case drained {
+          True -> Nil
+          False -> drain_connections(glisten_name, connections_name, timeout)
+        }
+        exit(atom.create("shutdown"))
+      }
+    }
+  })
+  |> actor.start
+}
+
+// Closes the listening socket, asks each connection to close when its running
+// request is done, and waits at most `timeout` milliseconds for them
+fn drain_connections(
+  glisten_name: process.Name(a),
+  connections_name: process.Name(b),
+  timeout: Int,
+) -> Nil {
+  case process.named(glisten_name), process.named(connections_name) {
+    Ok(glisten), Ok(connections) -> {
+      stop_accepting(glisten, connections)
+      let deadline = monotonic_time(Millisecond) + timeout
+      connections
+      |> supervisor_children
+      |> list.map(fn(pid) {
+        let _monitor = process.monitor(pid)
+        send_drain(pid)
+      })
+      |> list.length
+      |> await_closed(deadline)
+    }
+    _, _ -> Nil
+  }
+}
+
+fn await_closed(count: Int, deadline: Int) -> Nil {
+  let remaining = deadline - monotonic_time(Millisecond)
+  case count > 0 && remaining > 0 {
+    True ->
+      case
+        process.new_selector()
+        |> process.select_monitors(fn(down) { down })
+        |> process.selector_receive(remaining)
+      {
+        Ok(_down) -> await_closed(count - 1, deadline)
+        Error(Nil) -> Nil
+      }
+    False -> Nil
+  }
+}
+
+type TimeUnit {
+  Millisecond
+}
+
+@external(erlang, "erlang", "monotonic_time")
+fn monotonic_time(unit: TimeUnit) -> Int
+
+@external(erlang, "erlang", "exit")
+fn exit(reason: Atom) -> a
+
+@external(erlang, "mist_ffi", "stop_accepting")
+fn stop_accepting(supervisor: Pid, connections: Pid) -> Nil
+
+@external(erlang, "mist_ffi", "supervisor_children")
+fn supervisor_children(supervisor: Pid) -> List(Pid)
+
+@external(erlang, "mist_ffi", "send_drain")
+fn send_drain(pid: Pid) -> Nil
+
+@external(erlang, "mist_ffi", "drain_process")
+fn drain_process(supervisor: Pid) -> Result(Pid, Nil)
 
 /// Start the `mist` supervisor as a child of a supervision tree.
 pub fn supervised(

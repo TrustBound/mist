@@ -1,5 +1,6 @@
 import gleam/bytes_tree
 import gleam/dict
+import gleam/erlang/atom
 import gleam/erlang/process.{type Selector, type Subject}
 import gleam/http/response
 import gleam/int
@@ -20,7 +21,7 @@ import mist/internal/http2
 import mist/internal/http2/frame
 import mist/internal/http2/handler as http2_handler
 import mist/internal/http2/stream.{
-  type SendMessage, ConsumeData, Reset, Send, SendData, SendHeaders,
+  type SendMessage, ConsumeData, Drain, Reset, Send, SendData, SendHeaders,
 }
 
 pub type HandlerError {
@@ -42,6 +43,7 @@ pub fn init(_conn) -> #(State, Option(Selector(SendMessage))) {
   let selector =
     process.new_selector()
     |> process.select(subj)
+    |> process.select_record(atom.create("mist_drain"), 0, fn(_record) { Drain })
 
   #(new_state(subj), Some(selector))
 }
@@ -71,6 +73,7 @@ pub fn with_func(
       )
 
     let result = case msg, state {
+      User(Drain), Http1(..) -> Error(Ok(Nil))
       User(_msg), Http1(..) -> {
         Error(Error("Attempted to send HTTP/2 response without upgrade"))
       }
@@ -166,6 +169,12 @@ pub fn with_func(
         |> result.map(Http2)
         |> result.map_error(Error)
       }
+      User(Drain), Http2(state) -> {
+        state
+        |> http2_handler.drain(conn)
+        |> result.map(Http2)
+        |> result.map_error(Error)
+      }
       Packet(msg), Http1(state, self) -> {
         let _ = case state.idle_timer {
           Some(t) -> process.cancel_timer(t)
@@ -256,6 +265,11 @@ pub fn with_func(
     }
 
     case result {
+      Ok(Http2(state)) if state.draining ->
+        case dict.is_empty(state.streams) {
+          True -> glisten.stop()
+          False -> glisten.continue(Http2(state))
+        }
       Ok(value) -> glisten.continue(value)
       Error(Ok(_nil)) -> glisten.stop()
       Error(Error(reason)) -> glisten.stop_abnormal(reason)

@@ -3,7 +3,8 @@
 -export([binary_match/2, decode_packet/3, decode_atom/1,file_open/1, string_to_int/2, hpack_decode/2,
          hpack_encode/2, hpack_new_max_table_size/2, ets_lookup_element/3, get_path_and_query/1,
          file_close/1, file_pread/3, now/0, forward/3, mark_body_read/0,
-         take_body_read/0]).
+         take_body_read/0, stop_accepting/2, supervisor_children/1,
+         send_drain/1, drain_process/1]).
 
 now() ->
   Timestamp = os:system_time(microsecond),
@@ -145,3 +146,37 @@ mark_body_read() ->
 
 take_body_read() ->
   erase(mist_body_read) =:= true.
+
+%% Stops the listener and the acceptors of a glisten server, last started
+%% first, so that no acceptor restarts on a closed socket. The supervisor of
+%% the connections and the connections keep running
+stop_accepting(Supervisor, Connections) ->
+  Children = lists:reverse(lists:keysort(1, supervisor:which_children(Supervisor))),
+  lists:foreach(
+    fun({Id, Pid, _Type, _Modules}) when Pid =/= Connections ->
+          supervisor:terminate_child(Supervisor, Id);
+       (_Connections) ->
+          ok
+    end,
+    Children),
+  nil.
+
+supervisor_children(Supervisor) ->
+  [Pid || {_Id, Pid, _Type, _Modules} <- supervisor:which_children(Supervisor),
+          is_pid(Pid)].
+
+send_drain(Pid) ->
+  Pid ! {mist_drain},
+  nil.
+
+%% The process that drains the server is the only worker of its supervisor
+drain_process(Supervisor) ->
+  try supervisor:which_children(Supervisor) of
+    Children ->
+      case [Pid || {_Id, Pid, worker, _Modules} <- Children, is_pid(Pid)] of
+        [Pid] -> {ok, Pid};
+        _ -> {error, nil}
+      end
+  catch
+    exit:_NotRunning -> {error, nil}
+  end.

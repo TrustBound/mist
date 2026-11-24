@@ -2277,3 +2277,49 @@ pub fn it_sends_server_sent_events_from_the_init_selector_test() {
 
   assert list.first(data) == Ok(<<"data: from the selector\n\n":utf8>>)
 }
+
+pub fn it_finishes_running_streams_and_sends_go_away_when_it_stops_test() {
+  let server =
+    mist.new(fn(_req) {
+      process.sleep(1000)
+      response.new(200)
+      |> response.set_body(mist.Bytes(bytes_tree.from_string("done")))
+    })
+    |> mist.port(8888)
+    |> mist.with_shutdown_timeout(5000)
+    |> scaffold.start_unlinked
+  let received =
+    scaffold.http2_request_in_background([
+      #(":method", "GET"),
+      #(":scheme", "http"),
+      #(":authority", "localhost:8888"),
+      #(":path", "/"),
+    ])
+  process.sleep(300)
+
+  let stopped = scaffold.await_stop(scaffold.begin_stop(server), 5000)
+
+  let assert Ok(data) = process.receive(received, 1000)
+  let frames =
+    scaffold.decode_frames(data)
+    |> list.filter(fn(received) {
+      case received {
+        frame.GoAway(..) | frame.Data(..) -> True
+        _other -> False
+      }
+    })
+  assert frames
+    == [
+      frame.GoAway(
+        data: <<>>,
+        error: frame.NoError,
+        last_stream_id: frame.stream_identifier(1),
+      ),
+      frame.Data(
+        data: <<"done":utf8>>,
+        end_stream: True,
+        identifier: frame.stream_identifier(1),
+      ),
+    ]
+  assert stopped >= 600 && stopped < 1500
+}

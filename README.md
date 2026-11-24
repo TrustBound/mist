@@ -97,6 +97,8 @@ To see every changed line, compare the branch with the upstream release:
 - Give an error at once for an invalid chunk size in a streamed request body
 - Close the HTTP/1.1 connection when the request body was not read to its end
 - Refuse a chunk size line longer than 1024 bytes, and a chunk without its line end
+- Let running requests finish when the server stops, up to `with_shutdown_timeout`,
+  or drain a server with `drain` and a time that the call gives
 
 ## Licence and credit
 

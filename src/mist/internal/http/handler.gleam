@@ -45,6 +45,7 @@ pub fn call(
     case
       http.close_if_requested(req, resp)
       |> http.close_if_body_unread(req, _)
+      |> http.close_if_draining
     {
       response.Response(body: Websocket, ..) -> {
         Error(Ok(Nil))

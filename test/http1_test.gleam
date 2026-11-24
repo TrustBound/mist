@@ -7,6 +7,7 @@ import gleam/http/response.{type Response, Response}
 import gleam/list
 import gleam/option.{Some}
 import gleam/otp/actor
+import gleam/otp/static_supervisor
 import gleam/result
 import gleam/string
 import gleam/string_tree
@@ -831,4 +832,189 @@ pub fn it_keeps_the_connection_after_a_body_read_in_full_test() {
   assert process.receive(read, 1000) == Ok(Ok(0))
   assert process.receive(read, 1000) == Ok(Ok(0))
   assert process.receive(read, 1000) == Ok(Ok(5))
+}
+
+fn slow_handler(
+  sleep: Int,
+) -> fn(request.Request(mist.Connection)) ->
+  response.Response(mist.ResponseData) {
+  fn(_req) {
+    process.sleep(sleep)
+    response.new(200)
+    |> response.set_body(mist.Bytes(bytes_tree.from_string("done")))
+  }
+}
+
+const slow_get = <<"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n":utf8>>
+
+fn is_full_response(received: BitArray, connection: String) -> Bool {
+  let text = result.unwrap(bit_array.to_string(received), "")
+  string.starts_with(text, "HTTP/1.1 200")
+  && string.contains(text, "\r\nconnection: " <> connection <> "\r\n")
+  && string.ends_with(text, "\r\n\r\ndone")
+}
+
+pub fn it_finishes_a_running_request_when_it_stops_test() {
+  let server =
+    mist.new(slow_handler(1500))
+    |> mist.port(8888)
+    |> mist.with_shutdown_timeout(5000)
+    |> scaffold.start_unlinked
+  let received = scaffold.http1_request_in_background(slow_get)
+  process.sleep(300)
+
+  let stopped = scaffold.await_stop(scaffold.begin_stop(server), 5000)
+
+  let assert Ok(response) = process.receive(received, 1000)
+  assert is_full_response(response, "close")
+  assert stopped >= 1100 && stopped < 2000
+}
+
+pub fn it_refuses_new_connections_when_it_stops_test() {
+  let server =
+    mist.new(slow_handler(1000))
+    |> mist.port(8888)
+    |> mist.with_shutdown_timeout(5000)
+    |> scaffold.start_unlinked
+  let received = scaffold.http1_request_in_background(slow_get)
+  process.sleep(300)
+
+  let stopping = scaffold.begin_stop(server)
+  process.sleep(100)
+  let connected = scaffold.http1_connect()
+  let _stopped = scaffold.await_stop(stopping, 5000)
+
+  assert connected == Error(socket.Econnrefused)
+  let assert Ok(response) = process.receive(received, 1000)
+  assert is_full_response(response, "close")
+}
+
+pub fn it_closes_idle_connections_at_once_when_it_stops_test() {
+  let server =
+    mist.new(fn(req) {
+      case request.path_segments(req) {
+        ["slow"] -> slow_handler(1000)(req)
+        _ -> slow_handler(0)(req)
+      }
+    })
+    |> mist.port(8888)
+    |> mist.with_shutdown_timeout(5000)
+    |> scaffold.start_unlinked
+  let idle = scaffold.http1_open(slow_get)
+  assert is_full_response(scaffold.http1_receive(idle), "keep-alive")
+  let received =
+    scaffold.http1_request_in_background(<<
+      "GET /slow HTTP/1.1\r\nhost: localhost\r\n\r\n":utf8,
+    >>)
+  process.sleep(300)
+
+  let stopping = scaffold.begin_stop(server)
+  assert scaffold.http1_closes(idle, 500)
+  let closed = scaffold.elapsed(stopping)
+  let stopped = scaffold.await_stop(stopping, 5000)
+
+  let assert Ok(response) = process.receive(received, 1000)
+  assert is_full_response(response, "close")
+  assert closed < 200
+  assert stopped >= 600
+}
+
+pub fn it_closes_running_requests_at_the_shutdown_timeout_test() {
+  let server =
+    mist.new(slow_handler(10_000))
+    |> mist.port(8888)
+    |> mist.with_shutdown_timeout(500)
+    |> scaffold.start_unlinked
+  let received = scaffold.http1_request_in_background(slow_get)
+  process.sleep(300)
+
+  let stopped = scaffold.await_stop(scaffold.begin_stop(server), 5000)
+
+  assert process.receive(received, 1000) == Ok(<<>>)
+  assert stopped >= 450 && stopped < 1000
+}
+
+pub fn it_finishes_a_running_request_when_its_supervisor_stops_test() {
+  let assert Ok(supervisor) =
+    static_supervisor.new(static_supervisor.OneForOne)
+    |> static_supervisor.add(
+      mist.new(slow_handler(1000))
+      |> mist.port(8888)
+      |> mist.after_start(fn(_port, _scheme, _interface) { Nil })
+      |> mist.supervised,
+    )
+    |> static_supervisor.start
+  process.unlink(supervisor.pid)
+  let received = scaffold.http1_request_in_background(slow_get)
+  process.sleep(300)
+
+  let _stopped = scaffold.await_stop(scaffold.begin_stop(supervisor.pid), 5000)
+
+  let assert Ok(response) = process.receive(received, 1000)
+  assert is_full_response(response, "close")
+}
+
+pub fn it_closes_running_requests_at_once_when_killed_test() {
+  let server =
+    mist.new(slow_handler(1000))
+    |> mist.port(8888)
+    |> mist.with_shutdown_timeout(5000)
+    |> scaffold.start_unlinked
+  let received = scaffold.http1_request_in_background(slow_get)
+  process.sleep(300)
+
+  let stopping = scaffold.begin_kill(server)
+  let response = process.receive(received, 500)
+  let closed = scaffold.elapsed(stopping)
+
+  assert response == Ok(<<>>)
+  assert closed < 200
+  assert scaffold.http1_connect() == Error(socket.Econnrefused)
+}
+
+pub fn it_finishes_a_running_request_when_it_drains_test() {
+  let server =
+    mist.new(slow_handler(1000))
+    |> mist.port(8888)
+    |> mist.with_shutdown_timeout(5000)
+    |> scaffold.start_unlinked
+  let received = scaffold.http1_request_in_background(slow_get)
+  process.sleep(300)
+
+  let draining = scaffold.begin_stop_after_drain(server, 3000)
+  let drained = scaffold.elapsed(draining)
+  let stopped = scaffold.await_stop(draining, 1000) - drained
+
+  let assert Ok(response) = process.receive(received, 1000)
+  assert is_full_response(response, "close")
+  assert drained >= 600 && drained < 1500
+  assert stopped < 300
+}
+
+pub fn it_closes_running_requests_when_the_drain_time_ends_test() {
+  let server =
+    mist.new(slow_handler(10_000))
+    |> mist.port(8888)
+    |> mist.with_shutdown_timeout(5000)
+    |> scaffold.start_unlinked
+  let received = scaffold.http1_request_in_background(slow_get)
+  process.sleep(300)
+
+  let draining = scaffold.begin_stop_after_drain(server, 300)
+  let drained = scaffold.elapsed(draining)
+  let stopped = scaffold.await_stop(draining, 1000) - drained
+
+  assert process.receive(received, 1000) == Ok(<<>>)
+  assert drained >= 250 && drained < 800
+  assert stopped < 300
+}
+
+pub fn it_drains_a_stopped_server_test() {
+  let server =
+    mist.new(slow_handler(0))
+    |> mist.port(8888)
+    |> scaffold.start_unlinked
+  let _stopped = scaffold.await_stop(scaffold.begin_stop(server), 1000)
+
+  assert mist.drain(server, within: 100) == Nil
 }

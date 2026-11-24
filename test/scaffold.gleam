@@ -887,3 +887,105 @@ pub fn io_fwrite_user(data: anything) {
 
 @external(erlang, "erlang", "exit")
 fn exit(pid: process.Pid, reason: anything) -> Nil
+
+// Starts a server that the test stops with `begin_stop` and `await_stop`
+pub fn start_unlinked(
+  builder: mist.Builder(Connection, mist.ResponseData),
+) -> process.Pid {
+  let assert Ok(server) =
+    builder
+    |> mist.after_start(fn(_port, _scheme, _interface) { Nil })
+    |> mist.start
+  process.unlink(server.pid)
+  server.pid
+}
+
+pub type Stopping {
+  Stopping(monitor: process.Monitor, started: Int)
+}
+
+// Stops a server as its supervisor does when the application stops
+pub fn begin_stop(pid: process.Pid) -> Stopping {
+  let monitor = process.monitor(pid)
+  let started = monotonic_time(Millisecond)
+  exit(pid, atom.create("shutdown"))
+  Stopping(monitor:, started:)
+}
+
+// Kills a server: its supervisor gets the exit reason `kill`, which it
+// cannot trap
+pub fn begin_kill(pid: process.Pid) -> Stopping {
+  let monitor = process.monitor(pid)
+  let started = monotonic_time(Millisecond)
+  process.kill(pid)
+  Stopping(monitor:, started:)
+}
+
+// Drains a server with `mist.drain`, and then stops it as its supervisor
+// does when the application stops
+pub fn begin_stop_after_drain(pid: process.Pid, timeout: Int) -> Stopping {
+  let monitor = process.monitor(pid)
+  let started = monotonic_time(Millisecond)
+  mist.drain(pid, within: timeout)
+  exit(pid, atom.create("shutdown"))
+  Stopping(monitor:, started:)
+}
+
+// Waits at most `timeout` milliseconds for the server to stop, and gives the
+// milliseconds from `begin_stop` to the end of the server
+pub fn await_stop(stopping: Stopping, timeout: Int) -> Int {
+  let assert Ok(_down) =
+    process.new_selector()
+    |> process.select_specific_monitor(stopping.monitor, fn(down) { down })
+    |> process.selector_receive(timeout)
+  elapsed(stopping)
+}
+
+// The milliseconds since `begin_stop`
+pub fn elapsed(stopping: Stopping) -> Int {
+  monotonic_time(Millisecond) - stopping.started
+}
+
+// Sends `data` on a new connection from a new process. The subject gets all
+// the bytes the server sends until it closes the connection
+pub fn http1_request_in_background(data: BitArray) -> process.Subject(BitArray) {
+  let received = process.new_subject()
+  process.spawn(fn() {
+    let socket = http1_open(data)
+    process.send(received, http1_receive_until_closed(socket, <<>>))
+  })
+  received
+}
+
+// Opens an HTTP/2 connection with one request from a new process. The
+// subject gets all the bytes the server sends until it closes the connection
+pub fn http2_request_in_background(
+  headers: List(#(String, String)),
+) -> process.Subject(BitArray) {
+  let received = process.new_subject()
+  process.spawn(fn() {
+    let socket = http2_open([], headers)
+    process.send(received, http1_receive_until_closed(socket, <<>>))
+  })
+  received
+}
+
+pub fn http1_connect() -> Result(Socket, SocketReason) {
+  [options.Mode(options.Binary), options.ActiveMode(options.Passive)]
+  |> options.to_erl_options
+  |> gen_tcp_connect(atom.create("localhost"), 8888, _)
+}
+
+pub fn decode_frames(data: BitArray) -> List(Frame) {
+  case frame.decode(data) {
+    Ok(#(decoded, rest)) -> [decoded, ..decode_frames(rest)]
+    Error(_end) -> []
+  }
+}
+
+type TimeUnit {
+  Millisecond
+}
+
+@external(erlang, "erlang", "monotonic_time")
+fn monotonic_time(unit: TimeUnit) -> Int

@@ -696,6 +696,19 @@ pub fn close_if_body_unread(
   }
 }
 
+// A server that stops lets a running request finish. The response then tells
+// the client that the server closes the connection after it
+pub fn close_if_draining(resp: Response(body)) -> Response(body) {
+  let draining =
+    process.new_selector()
+    |> process.select_record(atom.create("mist_drain"), 0, fn(_record) { Nil })
+    |> process.selector_receive(0)
+  case draining {
+    Ok(Nil) -> connection_close(resp)
+    Error(Nil) -> resp
+  }
+}
+
 pub fn keep_alive(resp: Response(any)) -> Response(any) {
   response.set_header(resp, "connection", "keep-alive")
 }

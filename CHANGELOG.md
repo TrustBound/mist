@@ -1,5 +1,45 @@
 # Changelog
 
+# dream_http_server 2.1.0
+
+One more change to mist:
+
+- Let running requests finish when the server stops. Before this, a stop
+  closed every connection at once, and a running request got no response.
+  Now, when the supervisor stops the server, for example when the
+  application stops on `SIGTERM`, the server closes the listening socket and
+  the idle connections at once. Each running HTTP/1.1 request finishes, and
+  its response has `connection: close`. Each HTTP/2 connection gets
+  `GoAway` with the last stream that the server started. Its running streams
+  finish, and the server ignores new streams. The server closes the
+  connections that remain when the time ends. `with_shutdown_timeout` sets
+  the time. The default is 30 seconds, the time that Kubernetes waits after
+  `SIGTERM`
+- Add `drain(server, within: timeout)`. It drains a server that `start`
+  started, with a time that the call gives, and returns when the
+  connections are closed or the time ends. A stop of the supervisor after it
+  closes the connections that remain at once, and does not drain again. With
+  `within: 0`, a stop is as fast as before the change. A killed supervisor
+  stops at once: the server does not drain, and the process that drains does
+  not log a crash
+
+Tests: 134 run, 0 failed. 10 new tests are for the stop. 8 of them fail
+without the change: a running request finishes with `connection: close`, a
+new connection is refused, an idle connection closes at once, a request that
+runs longer than the time gets no response and the stop ends after the time,
+an HTTP/2 stream finishes after `GoAway`, a running request finishes when the
+supervisor above the server stops, a running request finishes in `drain`, and
+`drain` closes a running request when its time ends. One more test shows that
+a killed server closes a running request at once, with and without the
+change. One more shows that `drain` returns for a server that is already
+stopped. 8 existing tests now stop more slowly: 7 keep their connection open
+after a `connection: close` response, so the server waits for the client to
+close it (at most 5 seconds), and 1 has an HTTP/2 handler that does not
+return. The tests wait at most 1 second for each stop. Mac: Apple M1 Max, 10
+cores, 64 GB, macOS 26.5.1, OTP 29, Gleam 1.19.2, about 29 seconds with the
+build check while other tests ran on the machine, 3 of 3 runs passed. Linux:
+not run yet.
+
 # dream_http_server 2.0.0
 
 Five more changes to mist. The first changes the public API:

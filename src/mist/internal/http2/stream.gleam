@@ -38,6 +38,7 @@ pub type SendMessage {
     sent: Subject(Result(Nil, Nil)),
   )
   ConsumeData(identifier: StreamIdentifier(Frame), size: Int)
+  Drain
 }
 
 pub type StreamState {

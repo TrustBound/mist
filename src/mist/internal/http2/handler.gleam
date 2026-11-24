@@ -40,6 +40,7 @@ pub type State {
     receive_window_size: Int,
     settings: Http2Settings,
     streams: Dict(StreamIdentifier(Frame), stream.State),
+    draining: Bool,
   )
 }
 
@@ -322,6 +323,7 @@ pub fn upgrade(
     send_window_size: 65_535,
     settings: initial_settings,
     streams: dict.new(),
+    draining: False,
   )
 }
 
@@ -353,6 +355,26 @@ pub fn call(
         }
       }
     }
+  }
+}
+
+// A server that stops sends `GoAway` with the last stream it started. The
+// client starts no new streams on this connection, and the streams that run
+// can finish. The connection closes when it has no streams
+pub fn drain(state: State, conn: Connection) -> Result(State, String) {
+  send_go_away(state, conn, frame.NoError)
+  |> result.replace(State(..state, draining: True))
+}
+
+// After `GoAway`, the server ignores new streams from the client
+fn ignore_after_go_away(
+  state: State,
+  context: HpackContext,
+  next: fn() -> Result(State, String),
+) -> Result(State, String) {
+  case state.draining {
+    True -> Ok(State(..state, receive_hpack_context: context))
+    False -> next()
   }
 }
 
@@ -587,6 +609,7 @@ fn handle_frame(
         })
       use #(headers, context) <- result.try(decoded)
       use <- receive_trailers(state, conn, context, identifier, end_stream)
+      use <- ignore_after_go_away(state, context)
 
       let pending_content_length =
         headers
