@@ -2,7 +2,8 @@
 
 -export([binary_match/2, decode_packet/3, decode_atom/1,file_open/1, string_to_int/2, hpack_decode/2,
          hpack_encode/2, hpack_new_max_table_size/2, ets_lookup_element/3, get_path_and_query/1,
-         file_close/1, file_pread/3, now/0, forward/3]).
+         file_close/1, file_pread/3, now/0, forward/3, mark_body_read/0,
+         take_body_read/0]).
 
 now() ->
   Timestamp = os:system_time(microsecond),
@@ -135,3 +136,12 @@ decode_atom(_Value) -> {error, nil}.
 forward({subject, _Owner, Tag}, Pid, Message) ->
   Pid ! {Tag, Message},
   nil.
+
+%% Records in the process dictionary of the connection process that the
+%% request body was read to its end.
+mark_body_read() ->
+  put(mist_body_read, true),
+  nil.
+
+take_body_read() ->
+  erase(mist_body_read) =:= true.

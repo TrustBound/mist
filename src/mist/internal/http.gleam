@@ -1,4 +1,5 @@
 import gleam/bit_array
+import gleam/bool
 import gleam/bytes_tree.{type BytesTree}
 import gleam/dict.{type Dict}
 import gleam/dynamic.{type Dynamic}
@@ -180,9 +181,13 @@ pub fn read_data(
 
 const crnl = <<13:int, 10:int>>
 
+// A chunk size line longer than this is not a valid size
+const max_chunk_size_line = 1024
+
 pub type Chunk {
   Chunk(data: BitArray, buffer: Buffer)
   Complete
+  InvalidChunk
 }
 
 pub fn parse_chunk(string: BitArray) -> Chunk {
@@ -202,14 +207,15 @@ pub fn parse_chunk(string: BitArray) -> Chunk {
             }
           }
         }
-        Error(_) -> {
-          Chunk(data: <<>>, buffer: buffer.new(string))
-        }
+        Error(_) -> InvalidChunk
       }
     }
 
     _ -> {
-      Chunk(data: <<>>, buffer: buffer.new(string))
+      case bit_array.byte_size(string) > max_chunk_size_line {
+        True -> InvalidChunk
+        False -> Chunk(data: <<>>, buffer: buffer.new(string))
+      }
     }
   }
 }
@@ -221,6 +227,7 @@ fn read_chunk(
   buffer: Buffer,
   body: BytesTree,
   read_timeout: Int,
+  limit: Int,
 ) -> Result(BytesTree, DecodeError) {
   case buffer.data, binary_match(buffer.data, crnl) {
     _, Ok(#(offset, _)) -> {
@@ -241,7 +248,16 @@ fn read_chunk(
         |> result.replace_error(InvalidBody),
       )
       case size {
-        0 -> Ok(body)
+        0 -> {
+          // Bytes after the last chunk (trailers) are not read, so only a
+          // body that ends here leaves the socket at the next request
+          case rest {
+            <<13:int, 10:int>> -> mark_body_read()
+            _ -> Nil
+          }
+          Ok(body)
+        }
+        size if size > limit -> Error(ExcessBody)
         size ->
           case rest {
             <<next_chunk:bytes-size(size), 13:int, 10:int, rest:bytes>> ->
@@ -251,8 +267,14 @@ fn read_chunk(
                 Buffer(0, rest),
                 bytes_tree.append(body, next_chunk),
                 read_timeout,
+                limit - size,
               )
             _ -> {
+              // The chunk is here, but the line end after it is not
+              use <- bool.guard(
+                bit_array.byte_size(rest) >= size + 2,
+                Error(InvalidBody),
+              )
               use next <- result.try(read_data(
                 socket,
                 transport,
@@ -260,12 +282,23 @@ fn read_chunk(
                 InvalidBody,
                 read_timeout,
               ))
-              read_chunk(socket, transport, Buffer(0, next), body, read_timeout)
+              read_chunk(
+                socket,
+                transport,
+                Buffer(0, next),
+                body,
+                read_timeout,
+                limit,
+              )
             }
           }
       }
     }
     <<>> as data, _ | data, Error(Nil) -> {
+      use <- bool.guard(
+        bit_array.byte_size(data) > max_chunk_size_line,
+        Error(InvalidBody),
+      )
       use next <- result.try(read_data(
         socket,
         transport,
@@ -273,7 +306,7 @@ fn read_chunk(
         InvalidBody,
         read_timeout,
       ))
-      read_chunk(socket, transport, Buffer(0, next), body, read_timeout)
+      read_chunk(socket, transport, Buffer(0, next), body, read_timeout, limit)
     }
   }
 }
@@ -452,6 +485,7 @@ pub fn read_body(
         Buffer(remaining: 0, data: rest),
         bytes_tree.new(),
         req.body.read_timeout,
+        max_body_limit,
       ))
       Ok(request.set_body(req, bytes_tree.to_bit_array(chunk)))
     }
@@ -478,7 +512,10 @@ pub fn read_body(
             req.body.read_timeout,
           )
       }
-      |> result.map(request.set_body(req, _))
+      |> result.map(fn(body) {
+        mark_body_read()
+        request.set_body(req, body)
+      })
       |> result.replace_error(InvalidBody)
     }
     _,
@@ -637,6 +674,28 @@ pub fn close_if_requested(
   }
 }
 
+// A request body that the handler did not read to its end is still on the
+// socket. The server must not read it as the next request, so it closes the
+// connection after this response
+pub fn close_if_body_unread(
+  req: Request(any),
+  resp: Response(body),
+) -> Response(body) {
+  let body_read = take_body_read()
+  let has_body = case
+    request.get_header(req, "transfer-encoding"),
+    request.get_header(req, "content-length")
+  {
+    Ok(_), _ -> True
+    _, Ok(length) -> int.parse(length) != Ok(0)
+    _, _ -> False
+  }
+  case has_body && !body_read {
+    True -> connection_close(resp)
+    False -> resp
+  }
+}
+
 pub fn keep_alive(resp: Response(any)) -> Response(any) {
   response.set_header(resp, "connection", "keep-alive")
 }
@@ -749,6 +808,12 @@ fn binary_match(
 
 @external(erlang, "mist_ffi", "string_to_int")
 fn string_to_int(string string: Charlist, base base: Int) -> Result(Int, Nil)
+
+@external(erlang, "mist_ffi", "mark_body_read")
+pub fn mark_body_read() -> Nil
+
+@external(erlang, "mist_ffi", "take_body_read")
+fn take_body_read() -> Bool
 
 @external(erlang, "binary", "split")
 fn binary_split(source: BitArray, pattern: BitArray) -> List(BitArray)

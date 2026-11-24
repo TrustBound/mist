@@ -11,6 +11,8 @@ import gleam/result
 import gleam/string
 import gleam/string_tree
 import gleam/uri
+import glisten/socket
+import glisten/tcp
 import mist
 import scaffold.{
   bitstring_response_should_equal, make_request, string_response_should_equal,
@@ -535,4 +537,298 @@ pub fn it_closes_after_server_sent_events_when_the_request_asks_for_it_test() {
   )
 
   assert says_close_then_closes(scaffold.http1_open(close_request))
+}
+
+fn limited_body_handler(
+  read: process.Subject(Result(Int, mist.ReadError)),
+) -> fn(request.Request(mist.Connection)) ->
+  response.Response(mist.ResponseData) {
+  fn(req) {
+    let result =
+      mist.read_body(req, 1000)
+      |> result.map(fn(req) { bit_array.byte_size(req.body) })
+    process.send(read, result)
+    case result {
+      Ok(_size) -> response.new(200)
+      Error(_error) ->
+        response.new(413)
+        |> response.set_header("connection", "close")
+    }
+    |> response.set_body(mist.Bytes(bytes_tree.new()))
+  }
+}
+
+const chunked_head = "POST / HTTP/1.1\r\nhost: localhost:8888\r\ntransfer-encoding: chunked\r\n\r\n"
+
+pub fn it_rejects_a_chunked_body_one_byte_over_the_limit_test() {
+  let read = process.new_subject()
+  use <- scaffold.start_server(
+    mist.new(limited_body_handler(read))
+    |> mist.port(8888),
+  )
+  let body =
+    chunked_head
+    <> "1F4\r\n"
+    <> string.repeat("a", 500)
+    <> "\r\n1F5\r\n"
+    <> string.repeat("a", 501)
+    <> "\r\n0\r\n\r\n"
+  let socket = scaffold.http1_open(bit_array.from_string(body))
+
+  assert process.receive(read, 1000) == Ok(Error(mist.ExcessBody))
+  assert scaffold.http1_receive(socket)
+    |> bit_array.to_string
+    |> result.unwrap("")
+    |> string.starts_with("HTTP/1.1 413")
+}
+
+pub fn it_reads_a_chunked_body_at_the_limit_test() {
+  let read = process.new_subject()
+  use <- scaffold.start_server(
+    mist.new(limited_body_handler(read))
+    |> mist.port(8888),
+  )
+  let body =
+    chunked_head
+    <> "1F4\r\n"
+    <> string.repeat("a", 500)
+    <> "\r\n1F4\r\n"
+    <> string.repeat("a", 500)
+    <> "\r\n0\r\n\r\n"
+  let socket = scaffold.http1_open(bit_array.from_string(body))
+
+  assert process.receive(read, 1000) == Ok(Ok(1000))
+  assert scaffold.http1_receive(socket)
+    |> bit_array.to_string
+    |> result.unwrap("")
+    |> string.starts_with("HTTP/1.1 200")
+}
+
+pub fn it_rejects_a_large_chunk_without_reading_it_test() {
+  let read = process.new_subject()
+  use <- scaffold.start_server(
+    mist.new(limited_body_handler(read))
+    |> mist.port(8888),
+  )
+  // The chunk says 100,000 bytes, but only 10 are sent, and the connection
+  // stays open
+  let _socket =
+    scaffold.http1_open(<<chunked_head:utf8, "186A0\r\naaaaaaaaaa":utf8>>)
+
+  assert process.receive(read, 1000) == Ok(Error(mist.ExcessBody))
+}
+
+pub fn it_does_not_serve_the_unread_chunks_as_a_request_test() {
+  let read = process.new_subject()
+  use <- scaffold.start_server(
+    mist.new(limited_body_handler(read))
+    |> mist.port(8888),
+  )
+  let socket = scaffold.http1_open(<<chunked_head:utf8, "3E9\r\n":utf8>>)
+  assert process.receive(read, 1000) == Ok(Error(mist.ExcessBody))
+  assert scaffold.http1_receive(socket)
+    |> bit_array.to_string
+    |> result.unwrap("")
+    |> string.starts_with("HTTP/1.1 413")
+
+  // The rest of the chunk looks like a request
+  let _sent =
+    scaffold.http1_send(socket, <<
+      "GET / HTTP/1.1\r\nhost: localhost\r\n\r\n":utf8,
+    >>)
+
+  // The next thing on the connection is its end, not a response
+  assert tcp.receive_timeout(socket, 0, 2000) == Error(socket.Closed)
+}
+
+fn read_stream(
+  consume: fn(Int) -> Result(mist.Chunk, mist.ReadError),
+) -> Result(Nil, mist.ReadError) {
+  case consume(1000) {
+    Ok(mist.Chunk(_data, next)) -> read_stream(next)
+    Ok(mist.Done) -> Ok(Nil)
+    Error(error) -> Error(error)
+  }
+}
+
+pub fn it_streams_an_invalid_chunk_size_as_an_error_at_once_test() {
+  let read = process.new_subject()
+  use <- scaffold.start_server(
+    mist.new(fn(req) {
+      process.send(read, result.try(mist.stream(req), read_stream))
+      response.new(400)
+      |> response.set_body(mist.Bytes(bytes_tree.new()))
+    })
+    |> mist.port(8888),
+  )
+  // The second chunk size is not hexadecimal, and the connection stays open
+  let _socket =
+    scaffold.http1_open(<<chunked_head:utf8, "5\r\nhello\r\nzz\r\n":utf8>>)
+
+  assert process.receive(read, 1000) == Ok(Error(mist.MalformedBody))
+}
+
+const smuggled_request = "GET /x HTTP/1.1\r\nhost: localhost\r\n\r\n"
+
+// Sends `head`, reads the response, and then sends a request on the same
+// connection as the rest of the first body. The server must not answer it
+fn does_not_answer_the_rest_of_the_body(
+  handler: fn(request.Request(mist.Connection)) ->
+    response.Response(mist.ResponseData),
+  head: String,
+) -> Nil {
+  use <- scaffold.start_server(
+    mist.new(handler)
+    |> mist.port(8888),
+  )
+  let socket = scaffold.http1_open(bit_array.from_string(head))
+  assert scaffold.http1_receive(socket)
+    |> bit_array.to_string
+    |> result.unwrap("")
+    |> string.starts_with("HTTP/1.1 ")
+  let _sent =
+    scaffold.http1_send(socket, bit_array.from_string(smuggled_request))
+
+  assert tcp.receive_timeout(socket, 0, 2000) == Error(socket.Closed)
+}
+
+fn answer_without_close(
+  req: request.Request(mist.Connection),
+) -> response.Response(mist.ResponseData) {
+  case mist.read_body(req, 10) {
+    Ok(_req) -> response.new(200)
+    Error(_error) -> response.new(413)
+  }
+  |> response.set_body(mist.Bytes(bytes_tree.new()))
+}
+
+pub fn it_closes_after_an_unread_content_length_body_test() {
+  does_not_answer_the_rest_of_the_body(
+    answer_without_close,
+    "POST / HTTP/1.1\r\nhost: localhost\r\ncontent-length: 36\r\n\r\n",
+  )
+}
+
+pub fn it_closes_after_an_unread_chunked_body_test() {
+  does_not_answer_the_rest_of_the_body(
+    answer_without_close,
+    chunked_head <> "24\r\n",
+  )
+}
+
+pub fn it_closes_when_the_handler_does_not_read_the_body_test() {
+  does_not_answer_the_rest_of_the_body(
+    short_handler,
+    "POST / HTTP/1.1\r\nhost: localhost\r\ncontent-length: 36\r\n\r\n",
+  )
+}
+
+pub fn it_closes_when_a_stream_reader_stops_early_test() {
+  does_not_answer_the_rest_of_the_body(
+    fn(req) {
+      let assert Ok(consume) = mist.stream(req)
+      let assert Ok(mist.Chunk(<<"aaaaa":utf8>>, _next)) = consume(5)
+      short_handler(req)
+    },
+    "POST / HTTP/1.1\r\nhost: localhost\r\ncontent-length: 41\r\n\r\naaaaa",
+  )
+}
+
+pub fn it_does_not_read_trailers_as_a_request_test() {
+  does_not_answer_the_rest_of_the_body(
+    answer_without_close,
+    chunked_head <> "5\r\nhello\r\n0\r\n",
+  )
+}
+
+fn read_body_handler(
+  read: process.Subject(Result(Int, mist.ReadError)),
+) -> fn(request.Request(mist.Connection)) ->
+  response.Response(mist.ResponseData) {
+  fn(req) {
+    process.send(
+      read,
+      mist.read_body(req, 1_000_000)
+        |> result.map(fn(req) { bit_array.byte_size(req.body) }),
+    )
+    short_handler(req)
+  }
+}
+
+pub fn it_refuses_an_endless_chunk_size_line_test() {
+  let read = process.new_subject()
+  use <- scaffold.start_server(
+    mist.new(read_body_handler(read))
+    |> mist.port(8888),
+  )
+  let socket = scaffold.http1_open(bit_array.from_string(chunked_head))
+  let _sent = scaffold.http1_send(socket, <<string.repeat("1", 2000):utf8>>)
+
+  assert process.receive(read, 1000) == Ok(Error(mist.MalformedBody))
+}
+
+pub fn it_refuses_a_chunk_without_its_line_end_test() {
+  let read = process.new_subject()
+  use <- scaffold.start_server(
+    mist.new(read_body_handler(read))
+    |> mist.port(8888),
+  )
+  let socket =
+    scaffold.http1_open(bit_array.from_string(chunked_head <> "5\r\nhelloXX"))
+  let _sent = scaffold.http1_send(socket, <<string.repeat("X", 2000):utf8>>)
+
+  assert process.receive(read, 1000) == Ok(Error(mist.MalformedBody))
+}
+
+pub fn it_streams_an_endless_chunk_size_line_as_an_error_test() {
+  let read = process.new_subject()
+  use <- scaffold.start_server(
+    mist.new(fn(req) {
+      process.send(read, result.try(mist.stream(req), read_stream))
+      short_handler(req)
+    })
+    |> mist.port(8888),
+  )
+  let socket = scaffold.http1_open(bit_array.from_string(chunked_head))
+  let _sent = scaffold.http1_send(socket, <<string.repeat("1", 2000):utf8>>)
+
+  assert process.receive(read, 1000) == Ok(Error(mist.MalformedBody))
+}
+
+fn receives_ok(socket) -> Bool {
+  scaffold.http1_receive(socket)
+  |> bit_array.to_string
+  |> result.unwrap("")
+  |> string.starts_with("HTTP/1.1 200")
+}
+
+pub fn it_keeps_the_connection_after_a_body_read_in_full_test() {
+  let read = process.new_subject()
+  use <- scaffold.start_server(
+    mist.new(read_body_handler(read))
+    |> mist.port(8888),
+  )
+  let get = <<"GET / HTTP/1.1\r\nhost: localhost\r\n\r\n":utf8>>
+  let socket = scaffold.http1_open(get)
+  assert receives_ok(socket)
+  let assert Ok(_sent) = scaffold.http1_send(socket, get)
+  assert receives_ok(socket)
+  let assert Ok(_sent) =
+    scaffold.http1_send(socket, <<
+      "POST / HTTP/1.1\r\nhost: localhost\r\ncontent-length: 5\r\n\r\nhello":utf8,
+    >>)
+  assert receives_ok(socket)
+  let assert Ok(_sent) = scaffold.http1_send(socket, get)
+  assert receives_ok(socket)
+  let assert Ok(_sent) =
+    scaffold.http1_send(
+      socket,
+      bit_array.from_string(chunked_head <> "5\r\nhello\r\n0\r\n\r\n"),
+    )
+  assert receives_ok(socket)
+  let assert Ok(_sent) = scaffold.http1_send(socket, get)
+  assert receives_ok(socket)
+  assert process.receive(read, 1000) == Ok(Ok(0))
+  assert process.receive(read, 1000) == Ok(Ok(0))
+  assert process.receive(read, 1000) == Ok(Ok(5))
 }

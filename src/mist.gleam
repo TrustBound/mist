@@ -261,7 +261,10 @@ fn do_stream(
     let byte_size = bit_array.byte_size(buffer.data)
 
     case buffer.remaining, byte_size {
-      0, 0 -> Ok(Done)
+      0, 0 -> {
+        http.mark_body_read()
+        Ok(Done)
+      }
 
       0, _buffer_size -> {
         let #(data, rest) = buffer.slice(buffer, size)
@@ -344,6 +347,12 @@ fn fetch_chunks_until(
     False, _ -> {
       case http.parse_chunk(state.chunk_buffer.data) {
         http.Complete -> {
+          // Bytes after the last chunk (trailers) are not read, so only a
+          // body that ends here leaves the socket at the next request
+          case state.chunk_buffer.data == <<"0\r\n\r\n":utf8>> {
+            True -> http.mark_body_read()
+            False -> Nil
+          }
           let updated_state =
             ChunkState(..state, chunk_buffer: buffer.empty(), done: True)
           fetch_chunks_until(
@@ -354,6 +363,7 @@ fn fetch_chunks_until(
             read_timeout,
           )
         }
+        http.InvalidChunk -> Error(MalformedBody)
         http.Chunk(<<>>, next_buffer) -> {
           http.read_data(
             socket,
