@@ -733,8 +733,6 @@ pub fn supervised(
 pub type WebsocketMessage(custom) {
   Text(String)
   Binary(BitArray)
-  Closed
-  Shutdown
   Custom(custom)
 }
 

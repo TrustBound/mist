@@ -119,7 +119,6 @@ fn handle_ws_message(state, message, conn) {
       let assert Ok(_) = mist.send_text_frame(conn, text)
       mist.continue(state)
     }
-    mist.Closed | mist.Shutdown -> mist.stop()
   }
 }
 
